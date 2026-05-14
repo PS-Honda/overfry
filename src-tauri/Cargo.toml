@@ -1,0 +1,48 @@
+[package]
+name    = "overfry"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "overfry_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "overfry"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri               = { version = "2" }
+tauri-plugin-store  = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-shell  = "2"
+
+tokio              = { workspace = true }
+axum               = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+uuid               = { workspace = true }
+chrono             = { workspace = true }
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+moka               = { workspace = true }
+tempfile           = { workspace = true }
+notify             = { workspace = true }
+reqwest            = { workspace = true }
+tokio-stream       = { workspace = true }
+futures            = { workspace = true }
+ignore             = { workspace = true }
+regex              = { workspace = true }
+tower              = { workspace = true }
+tower-http         = { workspace = true }
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+strip         = true

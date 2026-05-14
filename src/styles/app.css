@@ -1,0 +1,117 @@
+/* Overfry app styles — overrides on top of Bulma */
+
+:root {
+  --color-running: #48c774;
+  --color-starting: #ffdd57;
+  --color-error: #f14668;
+  --color-stopped: #dbdbdb;
+}
+
+body {
+  background-color: #f5f5f5;
+  min-height: 100vh;
+}
+
+/* Status dot */
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 8px;
+  flex-shrink: 0;
+  background-color: var(--color-stopped);
+}
+.status-dot.running  { background-color: var(--color-running); }
+.status-dot.starting { background-color: var(--color-starting); }
+.status-dot.error    { background-color: var(--color-error); }
+.status-dot.stopped  { background-color: var(--color-stopped); }
+
+/* Card grid */
+#dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 1rem;
+  align-content: start;
+}
+
+/* Connection card */
+.connection-card {
+  border-left: 4px solid var(--color-stopped);
+  transition: border-color 0.2s;
+}
+.connection-card.running  { border-left-color: var(--color-running); }
+.connection-card.starting { border-left-color: var(--color-starting); }
+.connection-card.error    { border-left-color: var(--color-error); }
+
+.url-display {
+  font-family: monospace;
+  font-size: 0.78rem;
+  color: #555;
+  word-break: break-all;
+}
+
+/* Audit panel */
+.audit-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  font-size: 0.75rem;
+}
+
+.audit-row {
+  padding: 2px 0;
+  border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.audit-row .audit-time  { color: #aaa; flex-shrink: 0; }
+.audit-row .audit-tool  { font-weight: 600; }
+.audit-row .audit-path  { color: #555; word-break: break-all; }
+.audit-row.denied .audit-tool { color: var(--color-error); }
+.audit-row.write  .audit-tool { color: #3273dc; }
+
+/* Navbar brand */
+.navbar-brand .navbar-item {
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+/* Add button */
+#btn-add-server {
+  gap: 6px;
+}
+
+/* Modal wizard step */
+.type-choice-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.type-choice-card {
+  border: 2px solid #dbdbdb;
+  border-radius: 6px;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.type-choice-card:hover,
+.type-choice-card.selected {
+  border-color: #3273dc;
+  background: #f0f5ff;
+}
+.type-choice-card .type-icon {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Port field warning */
+.port-warning {
+  display: none;
+}
+.port-warning.visible {
+  display: block;
+}

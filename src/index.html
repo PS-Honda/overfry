@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overfry — MCP Bridge</title>
+  <link rel="stylesheet" href="/assets/bulma-1.0.min.css">
+  <link rel="stylesheet" href="/styles/app.css">
+</head>
+<body>
+
+<!-- ── Navbar ─────────────────────────────────────────────────── -->
+<nav class="navbar is-dark" role="navigation">
+  <div class="navbar-brand">
+    <a class="navbar-item">
+      <span>⬡ Overfry</span>
+    </a>
+  </div>
+  <div class="navbar-menu is-active">
+    <div class="navbar-end">
+      <div class="navbar-item">
+        <button id="btn-add-server" class="button is-primary is-small">
+          <span>+ Add Connection</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Main layout ────────────────────────────────────────────── -->
+<section class="section py-4">
+  <div class="container is-fluid">
+    <div class="columns">
+
+      <!-- Dashboard: connection cards -->
+      <div class="column is-9">
+        <div class="is-flex is-justify-content-space-between is-align-items-center mb-3">
+          <h1 class="title is-5 mb-0">Connections</h1>
+          <span id="connection-count" class="tag is-light">0 active</span>
+        </div>
+        <div id="dashboard">
+          <!-- Cards injected by dashboard.js -->
+          <div id="empty-state" class="box has-text-centered has-text-grey py-6">
+            <p class="is-size-5 mb-2">No connections yet</p>
+            <p class="is-size-7">Click <strong>+ Add Connection</strong> to get started.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Audit log panel -->
+      <div class="column is-3" id="audit-panel-host">
+        <div class="box" id="audit-panel">
+          <div class="is-flex is-justify-content-space-between is-align-items-center is-clickable mb-2" id="audit-toggle">
+            <span class="title is-6 mb-0">Recent Activity</span>
+            <span id="audit-chevron">▾</span>
+          </div>
+          <div id="audit-entries" class="audit-scroll">
+            <p class="has-text-grey is-size-7">No activity yet.</p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Add Server Modal ───────────────────────────────────────── -->
+<div id="modal-add" class="modal">
+  <div class="modal-background" id="modal-bg"></div>
+  <div class="modal-card" style="max-width: 540px; width: 90vw;">
+    <header class="modal-card-head">
+      <p class="modal-card-title" id="modal-title">Add Connection</p>
+      <button class="delete" id="modal-close" aria-label="close"></button>
+    </header>
+    <section class="modal-card-body" id="modal-body">
+
+      <!-- Step 1: choose type -->
+      <div id="step-1">
+        <p class="has-text-grey is-size-7 mb-3">Choose what you want to connect:</p>
+        <div class="type-choice-grid">
+          <div class="type-choice-card" data-type="Filesystem">
+            <div class="type-icon">📁</div>
+            <p class="has-text-weight-semibold">Local Folder</p>
+            <p class="is-size-7 has-text-grey">Expose a folder on your computer</p>
+          </div>
+          <div class="type-choice-card" data-type="RemoteProxy">
+            <div class="type-icon">☁️</div>
+            <p class="has-text-weight-semibold">Remote API</p>
+            <p class="is-size-7 has-text-grey">Outline, Notion, Obsidian plugin…</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2a: Filesystem config -->
+      <div id="step-2a" style="display:none;">
+        <div class="field">
+          <label class="label is-small">Connection Name</label>
+          <div class="control">
+            <input id="fs-name" class="input is-small" type="text" placeholder="My Vault">
+          </div>
+        </div>
+        <div class="field">
+          <label class="label is-small">Folder</label>
+          <div class="control is-flex gap-2" style="gap:8px;">
+            <input id="fs-path" class="input is-small" type="text" placeholder="C:\Users\you\Documents\vault" readonly>
+            <button id="btn-browse" class="button is-small is-light">Browse…</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="label is-small">Port</label>
+          <div class="control">
+            <input id="fs-port" class="input is-small" type="number" min="50000" max="59999" placeholder="50000">
+          </div>
+          <p id="fs-port-warning" class="help is-warning port-warning"></p>
+        </div>
+      </div>
+
+      <!-- Step 2b: RemoteProxy config -->
+      <div id="step-2b" style="display:none;">
+        <div class="field">
+          <label class="label is-small">Connection Name</label>
+          <div class="control">
+            <input id="rp-name" class="input is-small" type="text" placeholder="Outline Work">
+          </div>
+        </div>
+        <div class="field">
+          <label class="label is-small">API Preset</label>
+          <div class="control">
+            <div class="select is-small is-fullwidth">
+              <select id="rp-preset">
+                <option value="custom">Custom</option>
+                <option value="outline">Outline</option>
+                <option value="obsidian">Obsidian Local REST API</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="field">
+          <label class="label is-small" id="rp-url-label">Base URL</label>
+          <div class="control">
+            <input id="rp-url" class="input is-small" type="text" placeholder="https://your-outline.com">
+          </div>
+        </div>
+        <div class="field">
+          <label class="label is-small" id="rp-token-label">API Token</label>
+          <div class="control">
+            <input id="rp-token" class="input is-small" type="password" placeholder="••••••••">
+          </div>
+        </div>
+        <div class="field">
+          <label class="label is-small">Port</label>
+          <div class="control">
+            <input id="rp-port" class="input is-small" type="number" min="50000" max="59999" placeholder="50001">
+          </div>
+          <p id="rp-port-warning" class="help is-warning port-warning"></p>
+        </div>
+      </div>
+
+    </section>
+    <footer class="modal-card-foot is-justify-content-flex-end" style="gap:8px;">
+      <button id="btn-back" class="button is-light is-small" style="display:none;">← Back</button>
+      <button id="btn-next" class="button is-primary is-small" disabled>Next →</button>
+      <button id="btn-create" class="button is-success is-small" style="display:none;">Create Connection</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ── Card template ──────────────────────────────────────────── -->
+<template id="tmpl-connection-card">
+  <div class="card connection-card" data-connection-id="">
+    <div class="card-content py-3 px-4">
+      <div class="is-flex is-align-items-center is-justify-content-space-between">
+        <div class="is-flex is-align-items-center" style="gap:8px; min-width:0;">
+          <span class="status-dot stopped"></span>
+          <span class="connection-name has-text-weight-semibold" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></span>
+          <span class="tag is-light is-small type-badge ml-1"></span>
+        </div>
+        <div class="is-flex" style="gap:6px; flex-shrink:0;">
+          <button class="button is-small is-success is-light start-btn">Start</button>
+          <button class="button is-small is-warning is-light stop-btn" style="display:none;">Stop</button>
+          <button class="button is-small is-info is-light copy-url-btn" title="Copy MCP URL">Copy URL</button>
+          <button class="button is-small is-danger is-light delete-btn" title="Delete">✕</button>
+        </div>
+      </div>
+      <p class="url-display mt-2"></p>
+      <p class="help root-path-display has-text-grey-light mt-1"></p>
+    </div>
+  </div>
+</template>
+
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>
