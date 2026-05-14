@@ -1,8 +1,14 @@
 mod commands;
-mod models;
 mod error;
+mod models;
+mod port_manager;
+mod store;
+
+use std::sync::Mutex;
 
 use commands::*;
+use store::{AppStore, StoreState};
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -10,8 +16,41 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            let store = AppStore::new(app.handle().clone());
+            app.manage(StoreState(Mutex::new(store)));
+
+            // Validate ports on startup; emit events for reassigned ports
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(state) = handle.try_state::<StoreState>() {
+                    let s = state.0.lock().unwrap();
+                    if let Ok(mut cfg) = s.load_port_config() {
+                        let reassigned = port_manager::validate_and_reassign(&mut cfg);
+                        if !reassigned.is_empty() {
+                            let _ = s.save_port_config(&cfg);
+                            for (id, old, new) in reassigned {
+                                let _ = handle.emit("port-reassigned", serde_json::json!({
+                                    "id": id, "old_port": old, "new_port": new
+                                }));
+                            }
+                        }
+                    }
+                }
+            });
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            greet,
+            list_connections,
+            create_connection,
+            delete_connection,
+            suggest_port,
+            start_server,
+            stop_server,
+            get_server_status,
+            pick_folder,
+            get_audit_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
