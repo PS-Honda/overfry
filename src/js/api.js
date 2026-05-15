@@ -1,4 +1,8 @@
-const { invoke } = window.__TAURI__.core;
+// Lazy invoke — window.__TAURI__ is injected by Tauri after DOM load;
+// calling it lazily (inside function body) avoids module-init crash.
+function invoke(cmd, args) {
+  return window.__TAURI__.core.invoke(cmd, args);
+}
 
 export const greet = (name) => invoke("greet", { name });
 
