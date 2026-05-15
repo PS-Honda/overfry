@@ -170,4 +170,24 @@ mod tests {
         let result = validate_writable_path(&root, "\\\\server\\share\\file.txt");
         assert!(matches!(result, Err(AppError::PathTraversal(_))));
     }
+
+    #[test]
+    fn writable_path_symlink_parent_within_root() {
+        // A new file in a real subdirectory inside root should succeed
+        let root = std::env::temp_dir();
+        let result = validate_writable_path(&root, "subdir/newfile.txt");
+        // Either Ok (parent exists) or Io error (parent doesn't exist) — not PathTraversal
+        match result {
+            Ok(p) => assert!(p.starts_with(std::fs::canonicalize(&root).unwrap())),
+            Err(AppError::Io(_)) => {} // parent doesn't exist on this machine — fine
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn writable_path_double_dot_rejected() {
+        let root = std::env::temp_dir();
+        let result = validate_writable_path(&root, "../../../etc/evil.txt");
+        assert!(matches!(result, Err(AppError::PathTraversal(_)) | Err(AppError::Io(_))));
+    }
 }

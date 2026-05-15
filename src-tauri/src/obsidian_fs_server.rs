@@ -176,7 +176,7 @@ async fn handle_sse(headers: HeaderMap) -> Response {
 
 // ── Security ───────────────────────────────────────────────────────────────────
 
-fn origin_ok(headers: &HeaderMap) -> bool {
+pub(crate) fn origin_ok(headers: &HeaderMap) -> bool {
     match headers.get("origin").and_then(|v| v.to_str().ok()) {
         None => true, // no Origin header = same-origin or non-browser → allow
         Some(o) if o.starts_with("tauri://") => true,
@@ -1603,5 +1603,77 @@ mod tests {
         let headings = extract_headings(content);
         assert_eq!(headings.len(), 1);
         assert_eq!(headings[0]["text"], "Real Heading");
+    }
+
+    // ── Origin security regression tests ─────────────────────────────────────
+
+    #[test]
+    fn origin_ok_tauri_scheme_allowed_obsidian() {
+        use axum::http::HeaderMap;
+        let mut h = HeaderMap::new();
+        h.insert("origin", "tauri://localhost".parse().unwrap());
+        assert!(origin_ok(&h));
+    }
+
+    #[test]
+    fn origin_ok_rejects_http_localhost_obsidian() {
+        use axum::http::HeaderMap;
+        let mut h = HeaderMap::new();
+        h.insert("origin", "http://127.0.0.1:50000".parse().unwrap());
+        assert!(!origin_ok(&h));
+    }
+
+    #[test]
+    fn origin_ok_no_origin_allowed_obsidian() {
+        use axum::http::HeaderMap;
+        let h = HeaderMap::new();
+        assert!(origin_ok(&h));
+    }
+
+    // ── find_heading_section CRLF regression tests ───────────────────────────
+
+    #[test]
+    fn find_heading_section_crlf() {
+        // Section must work correctly with CRLF line endings.
+        // "## Sub" is a child heading (level 2 < 1 is false), so it is part of
+        // the "# Heading One" section — the section only ends at the next same-or-higher
+        // heading (level <= 1).  The important regression check is that byte offsets
+        // are valid UTF-8 slices and that content belonging to the section is present.
+        let content = "# Heading One\r\nContent line\r\n## Sub\r\nMore\r\n# Other\r\n";
+        let result = find_heading_section(content, "Heading One");
+        assert!(result.is_some());
+        let (_, start, end) = result.unwrap();
+        assert!(start <= end);
+        assert!(end <= content.len());
+        let section = &content[start..end]; // must not panic (OOB or invalid UTF-8)
+        assert!(section.contains("Content line"));
+        // Section must end before the peer "# Other" heading
+        assert!(!section.contains("# Other"));
+    }
+
+    #[test]
+    fn find_heading_section_eof_no_trailing_newline() {
+        // When file ends without trailing newline, must not panic (OOB bug regression)
+        let content = "# Heading\nContent without trailing newline";
+        let result = find_heading_section(content, "Heading");
+        assert!(result.is_some());
+        let (_, start, end) = result.unwrap();
+        assert!(end <= content.len()); // must not exceed content length
+        let _ = &content[start..end]; // must not panic
+    }
+
+    #[test]
+    fn find_heading_section_crlf_byte_offsets() {
+        // Verify byte offsets are correct with CRLF — section content must be valid UTF-8 slice
+        let content = "# H1\r\nLine A\r\nLine B\r\n# H2\r\nOther\r\n";
+        let result = find_heading_section(content, "H1");
+        assert!(result.is_some());
+        let (_, start, end) = result.unwrap();
+        assert!(start <= end);
+        assert!(end <= content.len());
+        let section = &content[start..end];
+        assert!(section.contains("Line A"));
+        assert!(section.contains("Line B"));
+        assert!(!section.contains("# H2"));
     }
 }

@@ -99,3 +99,67 @@ impl AuditLog {
 
 /// Tauri managed state wrapper for `AuditLog`.
 pub struct AuditState(pub AuditLog);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{AuditEntry, AuditResult};
+    use uuid::Uuid;
+
+    fn make_entry() -> AuditEntry {
+        AuditEntry {
+            id:            Uuid::new_v4(),
+            connection_id: Uuid::new_v4(),
+            tool_name:     "test_tool".to_string(),
+            path:          None,
+            timestamp:     chrono::Utc::now(),
+            session_id:    None,
+            result:        AuditResult::Ok,
+        }
+    }
+
+    #[test]
+    fn audit_append_no_panic_on_bad_path() {
+        // AuditLog with a non-existent path must not panic — it should gracefully degrade
+        let log = AuditLog::new(std::path::PathBuf::from(
+            "/nonexistent/path/that/does/not/exist/audit.ndjson",
+        ));
+        // Must not panic even with bad path
+        log.append(make_entry());
+    }
+
+    #[test]
+    fn audit_append_count_increments() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.ndjson");
+        let log = AuditLog::new(path);
+        assert_eq!(log.append_count.load(Ordering::Relaxed), 0);
+        log.append(make_entry());
+        assert_eq!(log.append_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn audit_ring_stores_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.ndjson");
+        let log = AuditLog::new(path);
+        log.append(make_entry());
+        log.append(make_entry());
+        let recent = log.recent(10);
+        assert_eq!(recent.len(), 2);
+    }
+
+    #[test]
+    fn audit_ring_caps_at_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.ndjson");
+        let log = AuditLog::new(path);
+        // Fill ring beyond RING_CAPACITY (500); it should not grow past 500
+        for _ in 0..=RING_CAPACITY {
+            log.append(make_entry());
+        }
+        let recent = log.recent(1000);
+        assert!(recent.len() <= RING_CAPACITY);
+    }
+}

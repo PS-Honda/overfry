@@ -133,6 +133,78 @@ impl From<Connection> for ConnectionView {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now()
+    }
+
+    #[test]
+    fn connection_view_omits_token() {
+        let conn = Connection {
+            id:              Uuid::new_v4(),
+            name:            "Test".to_string(),
+            connection_type: ConnectionType::RemoteProxy,
+            port:            50001,
+            root_paths:      vec![],
+            status:          ConnectionStatus::Stopped,
+            auth_config:     Some(AuthConfig {
+                base_url:      "https://example.com".to_string(),
+                token:         "super-secret-token".to_string(),
+                extra_headers: HashMap::new(),
+                preset:        None,
+            }),
+            created_at:      now(),
+            updated_at:      now(),
+        };
+        let view = ConnectionView::from(conn);
+        // Serialise to JSON and verify token is absent
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(
+            !json.contains("super-secret-token"),
+            "token must not appear in ConnectionView JSON: {json}"
+        );
+        assert!(
+            json.contains("https://example.com"),
+            "base_url must be present"
+        );
+    }
+
+    #[test]
+    fn connection_view_filesystem_no_auth() {
+        let conn = Connection {
+            id:              Uuid::new_v4(),
+            name:            "Local Folder".to_string(),
+            connection_type: ConnectionType::Filesystem,
+            port:            50000,
+            root_paths:      vec![std::path::PathBuf::from("/tmp/vault")],
+            status:          ConnectionStatus::Running,
+            auth_config:     None,
+            created_at:      now(),
+            updated_at:      now(),
+        };
+        let view = ConnectionView::from(conn);
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(json.contains("Local Folder"));
+        assert!(!json.contains("token"));
+    }
+
+    #[test]
+    fn connection_view_auth_config_view_has_no_token_field() {
+        // Verify AuthConfigView serialization never includes a "token" key at all
+        let auth_view = AuthConfigView {
+            base_url: "https://outline.example.com".to_string(),
+            preset:   Some("outline".to_string()),
+        };
+        let json = serde_json::to_string(&auth_view).unwrap();
+        assert!(!json.contains("token"), "AuthConfigView must have no token field: {json}");
+        assert!(json.contains("outline.example.com"));
+    }
+}
+
 // ── IPC request types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
