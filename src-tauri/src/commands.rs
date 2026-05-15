@@ -9,6 +9,7 @@ use crate::{
     filesystem_server,
     models::{AuditEntry, Connection, ConnectionStatus, ConnectionType, CreateConnectionRequest},
     port_manager,
+    proxy_server,
     server_manager::ServerManager,
     store::StoreState,
 };
@@ -114,7 +115,10 @@ pub async fn start_server(
             filesystem_server::create_router(conn.root_paths.clone(), conn.id, app.clone())
         }
         ConnectionType::RemoteProxy => {
-            return Err("RemoteProxy not implemented yet (Milestone 5)".into());
+            let auth = conn.auth_config
+                .ok_or_else(|| "RemoteProxy connection missing auth_config".to_string())?;
+            proxy_server::create_router(conn.id, auth, app.clone())
+                .map_err(|e| e.to_string())?
         }
     };
 

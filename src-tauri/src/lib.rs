@@ -4,6 +4,7 @@ mod error;
 mod filesystem_server;
 mod models;
 mod port_manager;
+mod proxy_server;
 mod security;
 mod server_manager;
 mod store;
