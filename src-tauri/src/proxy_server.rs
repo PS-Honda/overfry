@@ -15,7 +15,8 @@ use chrono::Utc;
 use futures::stream;
 use reqwest::Client;
 use serde_json::{json, Value};
-use tower::ServiceBuilder;
+use tower_http::timeout::TimeoutLayer;
+use std::time::Duration;
 use uuid::Uuid;
 
 use tauri::{Emitter, Manager};
@@ -66,10 +67,11 @@ pub fn create_router(
     let router = Router::new()
         .route("/mcp", get(handle_sse).post(handle_rpc))
         .with_state(state)
-        .layer(
-            ServiceBuilder::new()
-                .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE)),
-        );
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE))
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
+        ));
 
     Ok(router)
 }
@@ -92,6 +94,9 @@ async fn handle_rpc(
             return Json(rpc_err(None, -32700, "Parse error")).into_response();
         }
     };
+
+    // Extract request id to echo back in error responses (JSON-RPC spec)
+    let req_id: Value = body_value.get("id").cloned().unwrap_or(Value::Null);
 
     // Determine upstream URL
     let target_url = format!("{}/mcp", state.auth.base_url.trim_end_matches('/'));
@@ -130,7 +135,7 @@ async fn handle_rpc(
             let msg = format!("upstream request failed: {e}");
             (
                 AuditResult::Error(msg.clone()),
-                Json(rpc_err(None, -32603, msg)).into_response(),
+                Json(rpc_err(Some(req_id), -32603, msg)).into_response(),
             )
         }
         Ok(resp) => {
@@ -139,7 +144,7 @@ async fn handle_rpc(
                 let msg = format!("upstream error: {status}");
                 (
                     AuditResult::Error(msg.clone()),
-                    Json(rpc_err(None, -32603, msg)).into_response(),
+                    Json(rpc_err(Some(req_id), -32603, msg)).into_response(),
                 )
             } else {
                 match resp.bytes().await {
@@ -147,7 +152,7 @@ async fn handle_rpc(
                         let msg = format!("reading upstream body: {e}");
                         (
                             AuditResult::Error(msg.clone()),
-                            Json(rpc_err(None, -32603, msg)).into_response(),
+                            Json(rpc_err(Some(req_id), -32603, msg)).into_response(),
                         )
                     }
                     Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
@@ -155,10 +160,18 @@ async fn handle_rpc(
                             let msg = "upstream returned non-JSON body".to_string();
                             (
                                 AuditResult::Error(msg.clone()),
-                                Json(rpc_err(None, -32603, msg)).into_response(),
+                                Json(rpc_err(Some(req_id.clone()), -32603, msg)).into_response(),
                             )
                         }
-                        Ok(val) => (AuditResult::Ok, Json(val).into_response()),
+                        Ok(mut val) => {
+                            // Pass through upstream JSON-RPC errors with correct id
+                            if val.get("error").is_some() {
+                                val["id"] = req_id;
+                                (AuditResult::Ok, Json(val).into_response())
+                            } else {
+                                (AuditResult::Ok, Json(val).into_response())
+                            }
+                        },
                     },
                 }
             }
@@ -194,14 +207,10 @@ async fn handle_sse(headers: HeaderMap) -> Response {
 // ── Security ───────────────────────────────────────────────────────────────────
 
 fn origin_ok(headers: &HeaderMap) -> bool {
-    match headers.get("origin") {
-        None => true,
-        Some(v) => {
-            let o = v.to_str().unwrap_or("");
-            o.starts_with("tauri://")
-                || o.starts_with("http://127.0.0.1")
-                || o.starts_with("http://localhost")
-        }
+    match headers.get("origin").and_then(|v| v.to_str().ok()) {
+        None => true, // no Origin header = same-origin or non-browser → allow
+        Some(o) if o.starts_with("tauri://") => true,
+        Some(_) => false,
     }
 }
 
@@ -210,7 +219,7 @@ fn origin_ok(headers: &HeaderMap) -> bool {
 fn rpc_err(id: Option<Value>, code: i32, message: impl Into<String>) -> Value {
     json!({
         "jsonrpc": "2.0",
-        "id": id,
+        "id": id.unwrap_or(Value::Null),
         "error": { "code": code, "message": message.into() }
     })
 }

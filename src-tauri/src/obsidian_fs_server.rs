@@ -27,7 +27,7 @@ use moka::sync::Cache;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
-use tower::ServiceBuilder;
+use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 use crate::{
@@ -125,10 +125,11 @@ pub fn create_router(
     Router::new()
         .route("/mcp", get(handle_sse).post(handle_rpc))
         .with_state(state)
-        .layer(
-            ServiceBuilder::new()
-                .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE)),
-        )
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE))
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
+        ))
 }
 
 // ── Handlers ───────────────────────────────────────────────────────────────────
@@ -176,14 +177,10 @@ async fn handle_sse(headers: HeaderMap) -> Response {
 // ── Security ───────────────────────────────────────────────────────────────────
 
 fn origin_ok(headers: &HeaderMap) -> bool {
-    match headers.get("origin") {
-        None => true,
-        Some(v) => {
-            let o = v.to_str().unwrap_or("");
-            o.starts_with("tauri://")
-                || o.starts_with("http://127.0.0.1")
-                || o.starts_with("http://localhost")
-        }
+    match headers.get("origin").and_then(|v| v.to_str().ok()) {
+        None => true, // no Origin header = same-origin or non-browser → allow
+        Some(o) if o.starts_with("tauri://") => true,
+        Some(_) => false,
     }
 }
 
@@ -285,35 +282,43 @@ fn reconstruct_file(fm_value: &Value, body: &str) -> Result<String, AppError> {
 // ── Heading section finder ─────────────────────────────────────────────────────
 
 /// Returns `(heading_line_end, section_start, section_end)` as byte offsets.
-/// `heading_line_end` = index after the heading line (including `\n`).
+/// `heading_line_end` = index after the heading line (including its line ending).
 /// `section_start`    = first content byte after heading (same as heading_line_end).
 /// `section_end`      = byte index where next same-or-higher heading starts (or content.len()).
+///
+/// Uses `split_inclusive('\n')` so each line's `len()` includes its actual line-ending bytes
+/// (`\n` or `\r\n`), fixing the CRLF offset bug and preventing EOF out-of-bounds access.
 fn find_heading_section(content: &str, heading: &str) -> Option<(usize, usize, usize)> {
-    let lines: Vec<&str> = content.lines().collect();
     let mut found_level: Option<u32> = None;
     let mut heading_line_end: Option<usize> = None;
     let mut section_start: Option<usize> = None;
-    let mut pos: usize = 0;
+    let mut byte_pos: usize = 0;
 
-    for line in lines.iter() {
+    for line in content.split_inclusive('\n') {
         let trimmed = line.trim_start_matches('#');
         let hashes = line.len() - trimmed.len();
-        let is_heading = hashes > 0 && trimmed.starts_with(' ');
-        let text = trimmed.trim();
+        // A heading line starts with one or more '#' followed by a space
+        // Use the raw bytes before the line ending to determine if it looks like a heading
+        let line_stripped = line.trim_end_matches(['\n', '\r']);
+        let trimmed_stripped = line_stripped.trim_start_matches('#');
+        let hashes_stripped = line_stripped.len() - trimmed_stripped.len();
+        let is_heading = hashes_stripped > 0 && trimmed_stripped.starts_with(' ');
+        let text = trimmed_stripped.trim();
 
         if is_heading {
             if let Some(level) = found_level {
-                if (hashes as u32) <= level {
-                    // Next same-or-higher heading found — section ends here
-                    return Some((heading_line_end.unwrap(), section_start.unwrap(), pos));
+                if (hashes_stripped as u32) <= level {
+                    // Next same-or-higher heading — section ends here
+                    return Some((heading_line_end.unwrap(), section_start.unwrap(), byte_pos));
                 }
             } else if text.eq_ignore_ascii_case(heading) {
-                found_level = Some(hashes as u32);
-                heading_line_end = Some(pos + line.len() + 1); // +1 for \n
-                section_start = Some(pos + line.len() + 1);
+                found_level = Some(hashes_stripped as u32);
+                heading_line_end = Some(byte_pos + line.len()); // includes \n or \r\n
+                section_start = Some(byte_pos + line.len());
             }
         }
-        pos += line.len() + 1; // +1 for \n
+        let _ = hashes; // suppress unused warning from the first computation
+        byte_pos += line.len();
     }
 
     if found_level.is_some() {
@@ -462,13 +467,20 @@ fn build_outline(dir: &Path, current_depth: u32, max_depth: u32, count: &mut usi
     json!({ "name": name, "type": "directory", "children": children })
 }
 
-/// Read first 500 bytes of a file and try to extract `title:` from YAML frontmatter.
+/// Read first ~500 chars of a file and try to extract `title:` from YAML frontmatter.
 fn extract_title_from_file(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).ok()?;
-    let mut buf = [0u8; 500];
+    // Read 512 bytes to have margin for UTF-8 char boundary trimming
+    let mut buf = [0u8; 512];
     let n = f.read(&mut buf).ok()?;
-    let snippet = std::str::from_utf8(&buf[..n]).ok()?;
+    let raw = &buf[..n];
+    // Find a valid UTF-8 boundary at or before position 500
+    let valid_end = (0..=raw.len().min(512))
+        .rev()
+        .find(|&i| std::str::from_utf8(&raw[..i]).is_ok())
+        .unwrap_or(0);
+    let snippet = std::str::from_utf8(&raw[..valid_end]).ok()?;
 
     // Look for frontmatter block
     if !snippet.starts_with("---") {
@@ -644,10 +656,18 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
 
             let real = security::validate_path(root, path_str)?;
 
-            let mut f = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&real)?;
-            f.write_all(content.as_bytes())?;
+            // Atomic append: read existing + concat + atomic write
+            let existing = if real.exists() {
+                std::fs::read_to_string(&real)?
+            } else {
+                String::new()
+            };
+            let new_content = existing + content;
+            let parent = real.parent()
+                .ok_or_else(|| AppError::Other("no parent dir".into()))?;
+            let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+            tmp.write_all(new_content.as_bytes())?;
+            tmp.persist(&real).map_err(|e| e.error)?;
 
             Ok(json!([{ "type": "text", "text": "appended successfully" }]))
         }
@@ -698,9 +718,15 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
             let context_lines = args["context_lines"].as_u64().unwrap_or(3).min(10) as usize;
             let max_files = args["max_files"].as_u64().unwrap_or(20).min(50) as usize;
 
+            if query.len() > 256 {
+                return Err(AppError::Other("query pattern exceeds 256 characters".into()));
+            }
+
             let real = security::validate_path(root, path_str)?;
 
-            let re = regex::Regex::new(query)
+            let re = regex::RegexBuilder::new(query)
+                .size_limit(1_000_000)
+                .build()
                 .map_err(|e| AppError::Other(format!("invalid regex: {e}")))?;
 
             let mut file_results: Vec<Value> = Vec::new();
@@ -733,6 +759,12 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
 
                 if total_chars > 8000 {
                     truncated = true;
+                    files_skipped += 1;
+                    continue;
+                }
+
+                // Skip files larger than 10 MB
+                if entry.metadata().map(|m| m.len()).unwrap_or(0) > 10 * 1024 * 1024 {
                     files_skipped += 1;
                     continue;
                 }
@@ -989,6 +1021,11 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
                     continue;
                 }
 
+                // Skip files larger than 10 MB
+                if entry.metadata().map(|m| m.len()).unwrap_or(0) > 10 * 1024 * 1024 {
+                    continue;
+                }
+
                 let content = match std::fs::read_to_string(path) {
                     Ok(c) => c,
                     Err(_) => continue,
@@ -1064,6 +1101,10 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
             } else {
                 format!("{}/{formatted}.md", folder.trim_matches('/'))
             };
+
+            // Validate the computed path doesn't escape vault root
+            crate::security::validate_writable_path(root, &path_str)
+                .map_err(|e| AppError::Other(format!("computed path escapes vault: {e}")))?;
 
             Ok(json!([{ "type": "text", "text": path_str }]))
         }

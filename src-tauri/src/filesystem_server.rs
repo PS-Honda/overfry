@@ -25,7 +25,7 @@ use moka::sync::Cache;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
-use tower::ServiceBuilder;
+use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 use crate::{
@@ -123,10 +123,11 @@ pub fn create_router(
     Router::new()
         .route("/mcp", get(handle_sse).post(handle_rpc))
         .with_state(state)
-        .layer(
-            ServiceBuilder::new()
-                .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE)),
-        )
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE))
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
+        ))
 }
 
 // ── Handlers ───────────────────────────────────────────────────────────────────
@@ -175,14 +176,10 @@ async fn handle_sse(headers: HeaderMap) -> Response {
 // ── Security ───────────────────────────────────────────────────────────────────
 
 fn origin_ok(headers: &HeaderMap) -> bool {
-    match headers.get("origin") {
-        None => true,
-        Some(v) => {
-            let o = v.to_str().unwrap_or("");
-            o.starts_with("tauri://")
-                || o.starts_with("http://127.0.0.1")
-                || o.starts_with("http://localhost")
-        }
+    match headers.get("origin").and_then(|v| v.to_str().ok()) {
+        None => true, // no Origin header = same-origin or non-browser → allow
+        Some(o) if o.starts_with("tauri://") => true,
+        Some(_) => false,
     }
 }
 
@@ -339,10 +336,18 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
 
             let real = security::validate_path(root, path_str)?;
 
-            let mut f = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&real)?;
-            f.write_all(content.as_bytes())?;
+            // Atomic append: read existing + concat + atomic write
+            let existing = if real.exists() {
+                std::fs::read_to_string(&real)?
+            } else {
+                String::new()
+            };
+            let new_content = existing + content;
+            let parent = real.parent()
+                .ok_or_else(|| AppError::Other("no parent dir".into()))?;
+            let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+            tmp.write_all(new_content.as_bytes())?;
+            tmp.persist(&real).map_err(|e| e.error)?;
 
             Ok(json!([{ "type": "text", "text": "appended successfully" }]))
         }
@@ -395,9 +400,15 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
                 .ok_or_else(|| AppError::Other("query required".into()))?;
             let path_str = args["path"].as_str().unwrap_or(".");
 
+            if query.len() > 256 {
+                return Err(AppError::Other("query pattern exceeds 256 characters".into()));
+            }
+
             let real = security::validate_path(root, path_str)?;
 
-            let re = regex::Regex::new(query)
+            let re = regex::RegexBuilder::new(query)
+                .size_limit(1_000_000)
+                .build()
                 .map_err(|e| AppError::Other(format!("invalid regex: {e}")))?;
 
             let mut file_results: Vec<Value> = Vec::new();
@@ -418,6 +429,11 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
                     .and_then(|e| e.to_str())
                     .unwrap_or("");
                 if ext != "md" && ext != "txt" {
+                    continue;
+                }
+
+                // Skip files larger than 10 MB
+                if entry.metadata().map(|m| m.len()).unwrap_or(0) > 10 * 1024 * 1024 {
                     continue;
                 }
 

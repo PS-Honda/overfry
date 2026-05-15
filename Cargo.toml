@@ -22,7 +22,7 @@ futures      = "0.3"
 ignore       = "0.4"
 regex        = "1"
 tower        = { version = "0.5", features = ["limit", "util"] }
-tower-http   = { version = "0.6", features = ["trace", "cors", "limit"] }
+tower-http   = { version = "0.6", features = ["trace", "cors", "limit", "timeout"] }
 gray_matter  = "0.2"
 pulldown-cmark = "0.11"
 serde_yaml   = "0.9"

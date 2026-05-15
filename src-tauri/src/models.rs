@@ -92,6 +92,47 @@ pub struct AuditEntry {
     pub result:        AuditResult,
 }
 
+// ── Connection view (token-scrubbed projection for frontend) ───────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthConfigView {
+    pub base_url: String,
+    pub preset:   Option<String>,
+    // token intentionally omitted
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConnectionView {
+    pub id:              Uuid,
+    pub name:            String,
+    pub connection_type: ConnectionType,
+    pub port:            u16,
+    pub root_paths:      Vec<PathBuf>,
+    pub status:          ConnectionStatus,
+    pub auth_config:     Option<AuthConfigView>,
+    pub created_at:      DateTime<Utc>,
+    pub updated_at:      DateTime<Utc>,
+}
+
+impl From<Connection> for ConnectionView {
+    fn from(c: Connection) -> Self {
+        ConnectionView {
+            id:              c.id,
+            name:            c.name,
+            connection_type: c.connection_type,
+            port:            c.port,
+            root_paths:      c.root_paths,
+            status:          c.status,
+            auth_config:     c.auth_config.map(|a| AuthConfigView {
+                base_url: a.base_url,
+                preset:   a.preset,
+            }),
+            created_at:      c.created_at,
+            updated_at:      c.updated_at,
+        }
+    }
+}
+
 // ── IPC request types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]

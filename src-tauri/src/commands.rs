@@ -7,7 +7,7 @@ use crate::{
     audit::AuditState,
     error::AppError,
     filesystem_server,
-    models::{AuditEntry, Connection, ConnectionStatus, ConnectionType, CreateConnectionRequest},
+    models::{AuditEntry, Connection, ConnectionStatus, ConnectionType, ConnectionView, CreateConnectionRequest},
     obsidian_fs_server,
     port_manager,
     proxy_server,
@@ -20,16 +20,17 @@ type CmdResult<T> = Result<T, String>;
 // ── Connection CRUD ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn list_connections(store: State<StoreState>) -> CmdResult<Vec<Connection>> {
+pub fn list_connections(store: State<StoreState>) -> CmdResult<Vec<ConnectionView>> {
     let s = store.0.lock().unwrap();
-    s.load_connections().map_err(|e| e.to_string())
+    let conns = s.load_connections().map_err(|e| e.to_string())?;
+    Ok(conns.into_iter().map(ConnectionView::from).collect())
 }
 
 #[tauri::command]
 pub fn create_connection(
     store: State<StoreState>,
     req: CreateConnectionRequest,
-) -> CmdResult<Connection> {
+) -> CmdResult<ConnectionView> {
     let s = store.0.lock().unwrap();
 
     let mut port_cfg = s.load_port_config().map_err(|e| e.to_string())?;
@@ -55,7 +56,7 @@ pub fn create_connection(
     conns.push(conn.clone());
     s.save_connections(&conns).map_err(|e| e.to_string())?;
 
-    Ok(conn)
+    Ok(ConnectionView::from(conn))
 }
 
 #[tauri::command]

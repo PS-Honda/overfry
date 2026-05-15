@@ -9,6 +9,11 @@ pub fn validate_path(root: &Path, requested: &str) -> Result<PathBuf, AppError> 
     if requested.contains('\0') {
         return Err(AppError::PathTraversal("null byte in path".into()));
     }
+    // Block Windows UNC and device paths (\\server\share, \\?\, \\.\)
+    #[cfg(windows)]
+    if requested.starts_with("\\\\") {
+        return Err(AppError::PathTraversal("UNC/device paths not allowed".into()));
+    }
 
     let stripped = requested.trim_start_matches(['/', '\\']);
     let candidate = if stripped.is_empty() { root.to_path_buf() } else { root.join(stripped) };
@@ -44,21 +49,41 @@ pub fn validate_writable_path(root: &Path, requested: &str) -> Result<PathBuf, A
     if requested.contains('\0') {
         return Err(AppError::PathTraversal("null byte in path".into()));
     }
+    // Block Windows UNC and device paths (\\server\share, \\?\, \\.\)
+    #[cfg(windows)]
+    if requested.starts_with("\\\\") {
+        return Err(AppError::PathTraversal("UNC/device paths not allowed".into()));
+    }
 
     let stripped = requested.trim_start_matches(['/', '\\']);
     if stripped.is_empty() {
         return Err(AppError::PathTraversal("path is empty".into()));
     }
 
-    // Canonicalize the root first so normalize_lexical starts from a stable base
     let canonical_root = std::fs::canonicalize(root)?;
     let candidate = canonical_root.join(stripped);
     let normalized = normalize_lexical(&candidate);
 
+    // Lexical escape check first — catches `..` traversal even when parent doesn't exist
     if !normalized.starts_with(&canonical_root) {
         return Err(AppError::PathTraversal(format!("path escapes root: {requested}")));
     }
-    Ok(normalized)
+
+    // Canonicalize the parent so symlink escapes are caught even for new files.
+    // The parent directory must exist for a writable path to be valid.
+    let parent = normalized.parent().ok_or_else(|| {
+        AppError::PathTraversal("path has no parent directory".into())
+    })?;
+    let canonical_parent = std::fs::canonicalize(parent)?;
+    let final_path = canonical_parent.join(normalized.file_name().ok_or_else(|| {
+        AppError::PathTraversal("path has no file name".into())
+    })?);
+
+    // Re-check after resolving symlinks in parent
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(AppError::PathTraversal(format!("path escapes root: {requested}")));
+    }
+    Ok(final_path)
 }
 
 pub fn check_symlink_depth(path: &Path) -> Result<(), AppError> {
@@ -128,5 +153,21 @@ mod tests {
         // The returned path must be absolute and start with root
         let canonical_root = std::fs::canonicalize(&root).unwrap();
         assert!(p.starts_with(&canonical_root));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unc_path_rejected_validate_path() {
+        let root = std::env::temp_dir();
+        let result = validate_path(&root, "\\\\server\\share\\file.txt");
+        assert!(matches!(result, Err(AppError::PathTraversal(_))));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unc_path_rejected_validate_writable_path() {
+        let root = std::env::temp_dir();
+        let result = validate_writable_path(&root, "\\\\server\\share\\file.txt");
+        assert!(matches!(result, Err(AppError::PathTraversal(_))));
     }
 }
