@@ -58,14 +58,19 @@ function resetModal() {
 }
 
 function showStep(n) {
+  const isFs = selectedType === "Filesystem" || selectedType === "ObsidianFilesystem";
   step1.style.display  = n === 1 ? "" : "none";
-  step2a.style.display = n === 2 && selectedType === "Filesystem" ? "" : "none";
+  step2a.style.display = n === 2 && isFs ? "" : "none";
   step2b.style.display = n === 2 && selectedType === "RemoteProxy" ? "" : "none";
   btnBack.style.display   = n === 2 ? "" : "none";
   btnNext.style.display   = n === 1 ? "" : "none";
   btnCreate.style.display = n === 2 ? "" : "none";
   if (n === 1) btnNext.disabled = !selectedType;
-  if (n === 2) modalTitle.textContent = selectedType === "Filesystem" ? "Local Folder" : "Remote API";
+  if (n === 2) {
+    if (selectedType === "Filesystem") modalTitle.textContent = "Local Folder";
+    else if (selectedType === "ObsidianFilesystem") modalTitle.textContent = "Obsidian Vault";
+    else modalTitle.textContent = "Remote API";
+  }
 }
 
 // Type card selection
@@ -134,8 +139,8 @@ btnCreate.addEventListener("click", async () => {
   try {
     const { createConnection } = await import("./api.js");
     let req;
-    if (selectedType === "Filesystem") {
-      req = { name: fsName.value.trim(), connection_type: "Filesystem", port: parseInt(fsPort.value), root_paths: [fsPath.value], auth_config: null };
+    if (selectedType === "Filesystem" || selectedType === "ObsidianFilesystem") {
+      req = { name: fsName.value.trim(), connection_type: selectedType, port: parseInt(fsPort.value), root_paths: [fsPath.value], auth_config: null };
     } else {
       req = { name: rpName.value.trim(), connection_type: "RemoteProxy", port: parseInt(rpPort.value), root_paths: [], auth_config: { base_url: rpUrl.value.trim(), token: rpToken.value.trim(), extra_headers: {}, preset: rpPreset.value } };
     }

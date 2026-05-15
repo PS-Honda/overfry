@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{mpsc, Arc},
     time::Duration,
 };
@@ -20,7 +20,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use futures::stream;
 use gray_matter::{engine::YAML, Matter};
 use moka::sync::Cache;
@@ -196,7 +196,7 @@ fn dispatch(state: &FsState, req: RpcRequest) -> RpcResponse {
             json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "overfry-obsidian-filesystem", "version": "0.2.0" }
+                "serverInfo": { "name": "overfry-obsidian-filesystem", "version": "0.2.1" }
             }),
         ),
         "tools/list" => rpc_ok(req.id, json!({ "tools": tool_defs() })),
@@ -350,6 +350,154 @@ fn extract_frontmatter_tags(fm: &Value) -> Vec<String> {
     }
 }
 
+// ── MomentJS → chrono format translation ──────────────────────────────────────
+
+/// Translate a MomentJS format string to a chrono format string.
+/// Quarter handling must be done before calling this (replace `[Q]Q` with literal quarter digit).
+fn momentjs_to_chrono(fmt: &str) -> String {
+    fmt
+        .replace("YYYY", "%Y")
+        .replace("MM", "%m")
+        .replace("DD", "%d")
+        .replace("WW", "%W")   // ISO week 0-padded
+        .replace("ww", "%U")   // week-of-year Sunday start
+        .replace("ddd", "%a")
+}
+
+/// Resolve quarter number from month (1-indexed month → quarter 1..4).
+fn quarter_from_month(month: u32) -> u32 {
+    (month - 1) / 3 + 1
+}
+
+/// Format a NaiveDate using a MomentJS format string.
+/// Handles quarter tokens `[Q]Q` specially before delegating to chrono.
+fn format_date_momentjs(date: chrono::NaiveDate, fmt: &str) -> String {
+    // Handle quarter replacement before chrono sees it
+    let fmt_with_quarter = if fmt.contains("[Q]Q") || fmt.contains('Q') {
+        let q = quarter_from_month(date.month());
+        // Replace [Q]Q first (literal prefix), then bare Q
+        fmt.replace("[Q]Q", &q.to_string())
+           .replace('Q', &q.to_string())
+    } else {
+        fmt.to_string()
+    };
+
+    // Now translate remaining MomentJS tokens to chrono
+    let chrono_fmt = momentjs_to_chrono(&fmt_with_quarter);
+    date.format(&chrono_fmt).to_string()
+}
+
+// ── Vault outline builder ──────────────────────────────────────────────────────
+
+/// Build vault outline tree. Returns JSON value with `{name, type, children?}` nodes.
+fn build_outline(dir: &Path, current_depth: u32, max_depth: u32, count: &mut usize) -> Value {
+    let name = dir.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.to_string_lossy().into_owned());
+
+    if current_depth >= max_depth || *count >= 300 {
+        return json!({ "name": name, "type": "directory", "children": [] });
+    }
+
+    let mut children: Vec<Value> = Vec::new();
+
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return json!({ "name": name, "type": "directory", "children": [] }),
+    };
+
+    let mut entries: Vec<_> = read_dir
+        .filter_map(|e| e.ok())
+        .collect();
+
+    // Sort: directories first, then files, both alphabetically
+    entries.sort_by(|a, b| {
+        let a_is_dir = a.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        let b_is_dir = b.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        b_is_dir.cmp(&a_is_dir)
+            .then(a.file_name().cmp(&b.file_name()))
+    });
+
+    for entry in entries {
+        if *count >= 300 {
+            children.push(json!({ "name": "...truncated", "type": "truncated" }));
+            break;
+        }
+
+        let entry_name = entry.file_name().to_string_lossy().into_owned();
+
+        // Skip hidden files/dirs (starting with `.`) — Obsidian convention
+        if entry_name.starts_with('.') {
+            continue;
+        }
+
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+
+        *count += 1;
+
+        if file_type.is_dir() {
+            let child = build_outline(&entry.path(), current_depth + 1, max_depth, count);
+            children.push(child);
+        } else if file_type.is_file() {
+            let entry_path = entry.path();
+            let ext = entry_path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            if ext == "md" {
+                // Try to extract title from frontmatter
+                let title = extract_title_from_file(&entry_path);
+                if let Some(t) = title {
+                    children.push(json!({ "name": entry_name, "type": "note", "title": t }));
+                } else {
+                    children.push(json!({ "name": entry_name, "type": "note" }));
+                }
+            }
+            // Skip non-markdown files silently
+        }
+    }
+
+    json!({ "name": name, "type": "directory", "children": children })
+}
+
+/// Read first 500 bytes of a file and try to extract `title:` from YAML frontmatter.
+fn extract_title_from_file(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 500];
+    let n = f.read(&mut buf).ok()?;
+    let snippet = std::str::from_utf8(&buf[..n]).ok()?;
+
+    // Look for frontmatter block
+    if !snippet.starts_with("---") {
+        return None;
+    }
+
+    let mut in_fm = false;
+    for line in snippet.lines() {
+        if line.trim() == "---" {
+            if !in_fm {
+                in_fm = true;
+                continue;
+            } else {
+                break; // end of frontmatter
+            }
+        }
+        if in_fm {
+            // Match `title: value`
+            if let Some(rest) = line.strip_prefix("title:") {
+                let title = rest.trim().trim_matches('"').trim_matches('\'').to_string();
+                if !title.is_empty() {
+                    return Some(title);
+                }
+            }
+        }
+    }
+    None
+}
+
 // ── Tool implementations ───────────────────────────────────────────────────────
 
 fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError> {
@@ -357,19 +505,19 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
         .ok_or_else(|| AppError::Other("no root paths configured".into()))?;
 
     match name {
-        // ── Base filesystem tools (identical to filesystem_server) ──────────
+        // ── Base filesystem tools ──────────────────────────────────────────
 
         "list_directory" => {
             let path_str = args["path"].as_str().unwrap_or(".");
-            let cache_key = root.join(path_str.trim_start_matches(['/', '\\']));
-
-            if let Some(cached) = state.dir_cache.get(&cache_key) {
-                return Ok(cached);
-            }
+            let limit = args["limit"].as_u64().unwrap_or(100).min(200) as usize;
+            let offset = args["offset"].as_u64().unwrap_or(0) as usize;
 
             let real = security::validate_path(root, path_str)?;
-            let mut entries: Vec<Value> = std::fs::read_dir(&real)?
+
+            // Collect ALL entries (cap at 1000)
+            let mut all_entries: Vec<Value> = std::fs::read_dir(&real)?
                 .filter_map(|e| e.ok())
+                .take(1001)
                 .map(|e| {
                     let meta = e.metadata().ok();
                     let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
@@ -382,14 +530,40 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
                 })
                 .collect();
 
-            entries.sort_by(|a, b| {
+            all_entries.sort_by(|a, b| {
                 b["type"].as_str().cmp(&a["type"].as_str())
                     .then(a["name"].as_str().cmp(&b["name"].as_str()))
             });
 
-            let text = serde_json::to_string_pretty(&entries)
+            let truncated = all_entries.len() > 1000;
+            if truncated {
+                all_entries.truncate(1000);
+            }
+
+            let total = all_entries.len();
+            let page: Vec<Value> = all_entries
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .collect();
+
+            let mut result_obj = json!({
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "entries": page,
+            });
+
+            if truncated {
+                result_obj["truncated"] = json!(true);
+            }
+
+            let text = serde_json::to_string_pretty(&result_obj)
                 .map_err(|e| AppError::Other(e.to_string()))?;
             let result = json!([{ "type": "text", "text": text }]);
+
+            // Invalidate cache key based on path
+            let cache_key = root.join(path_str.trim_start_matches(['/', '\\']));
             state.dir_cache.insert(cache_key, result.clone());
             Ok(result)
         }
@@ -397,6 +571,9 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
         "read_file" => {
             let path_str = args["path"].as_str()
                 .ok_or_else(|| AppError::Other("path required".into()))?;
+            let start_line = args["start_line"].as_u64().map(|v| v as usize);
+            let end_line   = args["end_line"].as_u64().map(|v| v as usize);
+
             let real = security::validate_path(root, path_str)?;
             let size = std::fs::metadata(&real)?.len();
             if size > MAX_FILE_SIZE {
@@ -405,7 +582,36 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
             let bytes = std::fs::read(&real)?;
             let text = String::from_utf8(bytes)
                 .map_err(|_| AppError::Other("binary file: cannot read as text".into()))?;
-            Ok(json!([{ "type": "text", "text": text }]))
+
+            if start_line.is_none() && end_line.is_none() {
+                return Ok(json!([{ "type": "text", "text": text }]));
+            }
+
+            // Line-range mode
+            let lines: Vec<&str> = text.lines().collect();
+            let total = lines.len();
+
+            let start = start_line.unwrap_or(1);
+            let end   = end_line.unwrap_or(total);
+
+            if start < 1 {
+                return Err(AppError::Other("start_line must be >= 1".into()));
+            }
+            if end < start {
+                return Err(AppError::Other("end_line must be >= start_line".into()));
+            }
+            if end - start > 500 {
+                return Err(AppError::Other("line range exceeds 500 lines".into()));
+            }
+            if start > total {
+                return Err(AppError::Other(format!("start_line {start} exceeds file length {total}")));
+            }
+
+            let actual_end = end.min(total);
+            let slice = lines[(start - 1)..actual_end].join("\n");
+            let output = format!("{slice}\n\n[Lines {start}–{actual_end} of {total} total]");
+
+            Ok(json!([{ "type": "text", "text": output }]))
         }
 
         "write_file" => {
@@ -489,6 +695,8 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
             let query = args["query"].as_str()
                 .ok_or_else(|| AppError::Other("query required".into()))?;
             let path_str = args["path"].as_str().unwrap_or(".");
+            let context_lines = args["context_lines"].as_u64().unwrap_or(3).min(10) as usize;
+            let max_files = args["max_files"].as_u64().unwrap_or(20).min(50) as usize;
 
             let real = security::validate_path(root, path_str)?;
 
@@ -496,11 +704,13 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
                 .map_err(|e| AppError::Other(format!("invalid regex: {e}")))?;
 
             let mut file_results: Vec<Value> = Vec::new();
+            let mut total_chars: usize = 0;
+            let mut files_searched: usize = 0;
+            let mut total_matches: usize = 0;
+            let mut files_skipped: usize = 0;
+            let mut truncated = false;
 
             'walk: for entry in ignore::WalkBuilder::new(&real).build() {
-                if file_results.len() >= 50 {
-                    break 'walk;
-                }
                 let entry = match entry {
                     Ok(e) => e,
                     Err(_) => continue,
@@ -516,33 +726,76 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
                     continue;
                 }
 
+                if file_results.len() >= max_files {
+                    files_skipped += 1;
+                    continue;
+                }
+
+                if total_chars > 8000 {
+                    truncated = true;
+                    files_skipped += 1;
+                    continue;
+                }
+
                 let text = match std::fs::read_to_string(path) {
                     Ok(t) => t,
                     Err(_) => continue,
                 };
 
+                files_searched += 1;
+                let all_lines: Vec<&str> = text.lines().collect();
                 let mut matches: Vec<Value> = Vec::new();
-                for (line_idx, line) in text.lines().enumerate() {
-                    if matches.len() >= 5 {
-                        break;
-                    }
+
+                for (line_idx, line) in all_lines.iter().enumerate() {
                     if re.is_match(line) {
+                        let before_start = line_idx.saturating_sub(context_lines);
+                        let after_end = (line_idx + context_lines + 1).min(all_lines.len());
+
+                        let context_before: Vec<String> = all_lines[before_start..line_idx]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect();
+                        let context_after: Vec<String> = all_lines[(line_idx + 1)..after_end]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect();
+
                         matches.push(json!({
                             "line": line_idx + 1,
                             "text": line,
+                            "context_before": context_before,
+                            "context_after": context_after,
                         }));
+                        total_matches += 1;
                     }
                 }
 
                 if !matches.is_empty() {
-                    file_results.push(json!({
+                    let file_entry = json!({
                         "file": path.to_string_lossy(),
                         "matches": matches,
-                    }));
+                    });
+                    let entry_str = serde_json::to_string(&file_entry).unwrap_or_default();
+                    total_chars += entry_str.len();
+                    file_results.push(file_entry);
+                }
+
+                if total_chars > 8000 {
+                    truncated = true;
+                    break 'walk;
                 }
             }
 
-            let text = serde_json::to_string_pretty(&file_results)
+            let mut result_obj = serde_json::Map::new();
+            result_obj.insert("results".into(), Value::Array(file_results));
+            if truncated {
+                result_obj.insert("truncated".into(), json!(true));
+                result_obj.insert("files_searched".into(), json!(files_searched));
+                result_obj.insert("total_matches".into(), json!(total_matches));
+                result_obj.insert("files_skipped".into(), json!(files_skipped));
+            }
+
+            let text = serde_json::to_string_pretty(&Value::Object(result_obj))
                 .map_err(|e| AppError::Other(e.to_string()))?;
             Ok(json!([{ "type": "text", "text": text }]))
         }
@@ -768,8 +1021,195 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
             Ok(json!([{ "type": "text", "text": text }]))
         }
 
+        // ── New Obsidian v0.2.1 tools ──────────────────────────────────────
+
+        "periodic_note_path" => {
+            let period = args["period"].as_str()
+                .ok_or_else(|| AppError::Other("period required".into()))?;
+            let date_str = args["date"].as_str();
+
+            // Parse or use today
+            let date = if let Some(ds) = date_str {
+                chrono::NaiveDate::parse_from_str(ds, "%Y-%m-%d")
+                    .map_err(|e| AppError::Other(format!("invalid date '{ds}': {e}")))?
+            } else {
+                chrono::Local::now().date_naive()
+            };
+
+            // Try to read periodic-notes plugin config
+            let plugin_config_path = root.join(".obsidian/plugins/periodic-notes/data.json");
+            let daily_notes_path   = root.join(".obsidian/daily-notes.json");
+
+            // (folder, format_string)
+            let (folder, format_str) = if let Ok(raw) = std::fs::read_to_string(&plugin_config_path) {
+                if let Ok(config) = serde_json::from_str::<Value>(&raw) {
+                    let period_cfg = &config[period];
+                    let folder = period_cfg["folder"].as_str().unwrap_or("").to_string();
+                    let fmt    = period_cfg["format"].as_str().unwrap_or("").to_string();
+                    let fmt = if fmt.is_empty() { default_format(period) } else { fmt };
+                    (folder, fmt)
+                } else {
+                    // Fallback for daily only
+                    daily_notes_fallback(period, &daily_notes_path)
+                }
+            } else if period == "daily" {
+                daily_notes_fallback(period, &daily_notes_path)
+            } else {
+                ("".to_string(), default_format(period))
+            };
+
+            let formatted = format_date_momentjs(date, &format_str);
+            let path_str = if folder.is_empty() {
+                format!("{formatted}.md")
+            } else {
+                format!("{}/{formatted}.md", folder.trim_matches('/'))
+            };
+
+            Ok(json!([{ "type": "text", "text": path_str }]))
+        }
+
+        "get_vault_outline" => {
+            let depth = args["depth"].as_u64().unwrap_or(2).min(5) as u32;
+            let mut count: usize = 0;
+            let outline = build_outline(root, 0, depth, &mut count);
+            let text = serde_json::to_string_pretty(&outline)
+                .map_err(|e| AppError::Other(e.to_string()))?;
+            Ok(json!([{ "type": "text", "text": text }]))
+        }
+
+        "get_note_structure" => {
+            let path_str = args["path"].as_str()
+                .ok_or_else(|| AppError::Other("path required".into()))?;
+            let real = security::validate_path(root, path_str)?;
+
+            let size = std::fs::metadata(&real)?.len();
+            if size > MAX_FILE_SIZE {
+                return Err(AppError::FileTooLarge(size));
+            }
+
+            let content = std::fs::read_to_string(&real)
+                .map_err(|_| AppError::Other("cannot read file as text".into()))?;
+
+            let total_lines = content.lines().count();
+
+            // Parse frontmatter keys
+            let frontmatter_keys = extract_frontmatter_keys(&content);
+
+            // Parse headings
+            let headings = extract_headings(&content);
+
+            let result = json!({
+                "frontmatter_keys": frontmatter_keys,
+                "headings": headings,
+                "total_lines": total_lines,
+            });
+
+            let text = serde_json::to_string(&result)
+                .map_err(|e| AppError::Other(e.to_string()))?;
+            Ok(json!([{ "type": "text", "text": text }]))
+        }
+
         _ => Err(AppError::Other(format!("unknown tool: {name}"))),
     }
+}
+
+// ── Periodic note helpers ──────────────────────────────────────────────────────
+
+fn default_format(period: &str) -> String {
+    match period {
+        "daily"     => "YYYY-MM-DD".to_string(),
+        "weekly"    => "YYYY-[W]WW".to_string(),
+        "monthly"   => "YYYY-MM".to_string(),
+        "quarterly" => "YYYY-[Q]Q".to_string(),
+        "yearly"    => "YYYY".to_string(),
+        _           => "YYYY-MM-DD".to_string(),
+    }
+}
+
+fn daily_notes_fallback(period: &str, path: &std::path::Path) -> (String, String) {
+    if period == "daily" {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            if let Ok(config) = serde_json::from_str::<Value>(&raw) {
+                let folder = config["folder"].as_str().unwrap_or("").to_string();
+                let fmt    = config["format"].as_str().unwrap_or("").to_string();
+                let fmt    = if fmt.is_empty() { default_format("daily") } else { fmt };
+                return (folder, fmt);
+            }
+        }
+    }
+    ("".to_string(), default_format(period))
+}
+
+// ── Note structure helpers ─────────────────────────────────────────────────────
+
+/// Extract frontmatter key names from content (keys in `---` block).
+fn extract_frontmatter_keys(content: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut in_fm = false;
+    let mut fm_started = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            if !fm_started {
+                fm_started = true;
+                in_fm = true;
+                continue;
+            } else if in_fm {
+                break; // end of frontmatter
+            }
+        }
+        if in_fm {
+            // Match key: value (key is word chars or hyphen)
+            if let Some(colon_pos) = line.find(':') {
+                let key_part = &line[..colon_pos];
+                let key = key_part.trim();
+                // Only accept keys that are valid identifiers
+                if !key.is_empty() && key.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+                    && key.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                {
+                    keys.push(key.to_string());
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// Extract headings from markdown content.
+fn extract_headings(content: &str) -> Vec<Value> {
+    let mut headings = Vec::new();
+    let mut in_fm = false;
+    let mut fm_done = false;
+    let mut fm_count = 0;
+
+    for (line_idx, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        // Skip frontmatter block
+        if !fm_done {
+            if trimmed == "---" {
+                fm_count += 1;
+                if fm_count == 1 { in_fm = true; continue; }
+                if fm_count == 2 { in_fm = false; fm_done = true; continue; }
+            }
+            if in_fm { continue; }
+        }
+
+        // Match heading lines
+        if line.starts_with('#') {
+            let trimmed_hashes = line.trim_start_matches('#');
+            let level = line.len() - trimmed_hashes.len();
+            if trimmed_hashes.starts_with(' ') && (1..=6).contains(&level) {
+                let heading_text = trimmed_hashes.trim().to_string();
+                headings.push(json!({
+                    "level": level,
+                    "text": heading_text,
+                    "line": line_idx + 1,
+                }));
+            }
+        }
+    }
+    headings
 }
 
 // ── Tool definitions ───────────────────────────────────────────────────────────
@@ -778,22 +1218,26 @@ fn tool_defs() -> Value {
     json!([
         {
             "name": "list_directory",
-            "description": "List files and directories at a path within the root. Use '.' for root.",
+            "description": "List files and directories at a path within the root. Supports pagination via limit/offset. Returns total count.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Path relative to root" }
+                    "path":   { "type": "string",  "description": "Path relative to root (default: '.')" },
+                    "limit":  { "type": "integer", "description": "Max entries to return (default 100, max 200)" },
+                    "offset": { "type": "integer", "description": "Entries to skip for pagination (default 0)" }
                 },
                 "required": ["path"]
             }
         },
         {
             "name": "read_file",
-            "description": "Read text content of a file within the root. Returns error for binary files. Max 10 MB.",
+            "description": "Read text content of a file within the root. Optionally specify start_line/end_line for chunked reading (max 500 lines per call). Returns binary-file error if not UTF-8. Max 10 MB.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Path relative to root" }
+                    "path":       { "type": "string",  "description": "Path relative to root" },
+                    "start_line": { "type": "integer", "description": "First line to read, 1-indexed (optional)" },
+                    "end_line":   { "type": "integer", "description": "Last line to read, inclusive (optional)" }
                 },
                 "required": ["path"]
             }
@@ -836,12 +1280,14 @@ fn tool_defs() -> Value {
         },
         {
             "name": "search_files",
-            "description": "Search .md and .txt files for a regex pattern. Returns up to 50 files with up to 5 matching lines each.",
+            "description": "Search .md and .txt files for a regex pattern. Returns matching lines with surrounding context. Hard cap at 8000 chars of output.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Regex pattern to search for" },
-                    "path":  { "type": "string", "description": "Path relative to root to search within (default: root)" }
+                    "query":         { "type": "string",  "description": "Regex pattern to search for" },
+                    "path":          { "type": "string",  "description": "Path relative to root to search within (default: root)" },
+                    "context_lines": { "type": "integer", "description": "Lines of context before/after each match (default 3, max 10)" },
+                    "max_files":     { "type": "integer", "description": "Max files to return results from (default 20, max 50)" }
                 },
                 "required": ["query"]
             }
@@ -905,6 +1351,40 @@ fn tool_defs() -> Value {
                     "path": { "type": "string", "description": "Optional path relative to root to search within (default: entire vault)" }
                 },
                 "required": []
+            }
+        },
+        {
+            "name": "periodic_note_path",
+            "description": "Resolve the file path for a periodic note (daily/weekly/monthly/quarterly/yearly). Reads .obsidian plugin config for folder and format. Returns the relative path including .md extension.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "period": { "type": "string", "enum": ["daily", "weekly", "monthly", "quarterly", "yearly"], "description": "Period type" },
+                    "date":   { "type": "string", "description": "ISO date string YYYY-MM-DD (default: today)" }
+                },
+                "required": ["period"]
+            }
+        },
+        {
+            "name": "get_vault_outline",
+            "description": "Get a tree view of the vault structure with note titles extracted from frontmatter. Capped at 300 nodes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "depth": { "type": "integer", "description": "Max depth to traverse (default 2, max 5)" }
+                },
+                "required": []
+            }
+        },
+        {
+            "name": "get_note_structure",
+            "description": "Get the heading outline and frontmatter key names of a note without loading full content into context.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path relative to root" }
+                },
+                "required": ["path"]
             }
         }
     ])
@@ -989,5 +1469,98 @@ mod tests {
         let fm = json!({ "tags": "rust, dev, obsidian" });
         let tags = extract_frontmatter_tags(&fm);
         assert_eq!(tags, vec!["rust", "dev", "obsidian"]);
+    }
+
+    // ── New tests for v0.2.1 ─────────────────────────────────────────────────
+
+    #[test]
+    fn momentjs_to_chrono_basic() {
+        assert_eq!(momentjs_to_chrono("YYYY-MM-DD"), "%Y-%m-%d");
+        assert_eq!(momentjs_to_chrono("YYYY-[W]WW"), "%Y-[W]%W");
+        assert_eq!(momentjs_to_chrono("YYYY-MM"), "%Y-%m");
+        assert_eq!(momentjs_to_chrono("YYYY"), "%Y");
+    }
+
+    #[test]
+    fn format_date_daily() {
+        let date = chrono::NaiveDate::from_ymd_opt(2025, 3, 15).unwrap();
+        let result = format_date_momentjs(date, "YYYY-MM-DD");
+        assert_eq!(result, "2025-03-15");
+    }
+
+    #[test]
+    fn format_date_monthly() {
+        let date = chrono::NaiveDate::from_ymd_opt(2025, 3, 15).unwrap();
+        let result = format_date_momentjs(date, "YYYY-MM");
+        assert_eq!(result, "2025-03");
+    }
+
+    #[test]
+    fn format_date_yearly() {
+        let date = chrono::NaiveDate::from_ymd_opt(2025, 3, 15).unwrap();
+        let result = format_date_momentjs(date, "YYYY");
+        assert_eq!(result, "2025");
+    }
+
+    #[test]
+    fn format_date_quarterly_q1() {
+        let date = chrono::NaiveDate::from_ymd_opt(2025, 1, 15).unwrap();
+        let result = format_date_momentjs(date, "YYYY-[Q]Q");
+        assert_eq!(result, "2025-1");
+    }
+
+    #[test]
+    fn format_date_quarterly_q4() {
+        let date = chrono::NaiveDate::from_ymd_opt(2025, 12, 1).unwrap();
+        let result = format_date_momentjs(date, "YYYY-[Q]Q");
+        assert_eq!(result, "2025-4");
+    }
+
+    #[test]
+    fn quarter_computation() {
+        assert_eq!(quarter_from_month(1),  1);
+        assert_eq!(quarter_from_month(3),  1);
+        assert_eq!(quarter_from_month(4),  2);
+        assert_eq!(quarter_from_month(6),  2);
+        assert_eq!(quarter_from_month(7),  3);
+        assert_eq!(quarter_from_month(9),  3);
+        assert_eq!(quarter_from_month(10), 4);
+        assert_eq!(quarter_from_month(12), 4);
+    }
+
+    #[test]
+    fn default_formats_correct() {
+        assert_eq!(default_format("daily"),     "YYYY-MM-DD");
+        assert_eq!(default_format("weekly"),    "YYYY-[W]WW");
+        assert_eq!(default_format("monthly"),   "YYYY-MM");
+        assert_eq!(default_format("quarterly"), "YYYY-[Q]Q");
+        assert_eq!(default_format("yearly"),    "YYYY");
+    }
+
+    #[test]
+    fn extract_frontmatter_keys_basic() {
+        let content = "---\ntitle: Test\ntags:\n  - rust\ndate: 2025-01-01\n---\nBody";
+        let keys = extract_frontmatter_keys(content);
+        assert!(keys.contains(&"title".to_string()));
+        assert!(keys.contains(&"date".to_string()));
+    }
+
+    #[test]
+    fn extract_headings_basic() {
+        let content = "# Overview\n\nSome text\n\n## Section 1\n\nContent\n\n### Subsection\n";
+        let headings = extract_headings(content);
+        assert_eq!(headings.len(), 3);
+        assert_eq!(headings[0]["level"], 1);
+        assert_eq!(headings[0]["text"], "Overview");
+        assert_eq!(headings[1]["level"], 2);
+        assert_eq!(headings[2]["level"], 3);
+    }
+
+    #[test]
+    fn extract_headings_skips_frontmatter() {
+        let content = "---\ntitle: My Note\n---\n\n# Real Heading\n";
+        let headings = extract_headings(content);
+        assert_eq!(headings.len(), 1);
+        assert_eq!(headings[0]["text"], "Real Heading");
     }
 }

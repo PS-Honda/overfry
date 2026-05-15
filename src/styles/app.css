@@ -326,6 +326,23 @@ html, body {
 .type-choice-card p:last-child { color: var(--fire-grey); font-size: 0.75rem; }
 .type-choice-card.selected p:last-child { color: #aaa; }
 
+.type-choice-card.wide {
+  grid-column: 1 / -1;
+}
+.no-plugin-badge {
+  display: inline-block;
+  font-size: 0.58rem;
+  background: rgba(72, 199, 142, 0.12);
+  color: #48c78e;
+  border: 1px solid rgba(72, 199, 142, 0.35);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-top: 6px;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
 /* ── Modal buttons ────────────────────────────────────────────────────────── */
 .modal-card-foot .button.is-primary,
 .modal-card-foot #btn-next,

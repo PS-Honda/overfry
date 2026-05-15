@@ -7,7 +7,7 @@ const tmpl        = document.getElementById("tmpl-connection-card");
 
 const TYPE_LABELS = {
   Filesystem:         "Filesystem",
-  ObsidianFilesystem: "Obsidian FS",
+  ObsidianFilesystem: "Obsidian Vault",
   RemoteProxy:        "Remote API",
 };
 
