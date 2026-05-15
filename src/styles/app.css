@@ -1,33 +1,92 @@
-/* Overfry app styles — overrides on top of Bulma */
-
+/* ── Fire palette ─────────────────────────────────────────────────────────── */
 :root {
-  --color-running: #48c774;
-  --color-starting: #ffdd57;
-  --color-error: #f14668;
-  --color-stopped: #dbdbdb;
+  --fire-black:   #111111;
+  --fire-charcoal:#1e1e1e;
+  --fire-ash:     #2e2e2e;
+  --fire-smoke:   #444444;
+  --fire-yellow:  #ffd200;
+  --fire-amber:   #ff8c00;
+  --fire-red:     #e63000;
+  --fire-grey:    #666666;
+
+  /* Status */
+  --color-running:  var(--fire-yellow);
+  --color-starting: var(--fire-amber);
+  --color-error:    var(--fire-red);
+  --color-stopped:  var(--fire-smoke);
 }
 
-body {
-  background-color: #f5f5f5;
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+html, body {
+  background-color: var(--fire-black);
+  color: #e8e8e8;
   min-height: 100vh;
+  font-family: 'Segoe UI', system-ui, sans-serif;
 }
 
-/* Status dot */
-.status-dot {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  margin-right: 8px;
-  flex-shrink: 0;
-  background-color: var(--color-stopped);
+/* ── Navbar ───────────────────────────────────────────────────────────────── */
+.navbar {
+  background-color: var(--fire-charcoal) !important;
+  border-bottom: 2px solid var(--fire-yellow);
+  padding: 0 1rem;
 }
-.status-dot.running  { background-color: var(--color-running); }
-.status-dot.starting { background-color: var(--color-starting); }
-.status-dot.error    { background-color: var(--color-error); }
-.status-dot.stopped  { background-color: var(--color-stopped); }
 
-/* Card grid */
+.navbar-brand .brand-name {
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--fire-yellow);
+}
+
+.navbar-brand .brand-sub {
+  font-size: 0.65rem;
+  color: var(--fire-grey);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin-left: 4px;
+  align-self: flex-end;
+  margin-bottom: 3px;
+}
+
+/* ── Section / container bg ──────────────────────────────────────────────── */
+.section { background-color: var(--fire-black); }
+
+/* ── Page title ───────────────────────────────────────────────────────────── */
+.page-title {
+  color: #e8e8e8;
+  font-weight: 700;
+}
+
+/* ── Count badge ──────────────────────────────────────────────────────────── */
+#connection-count {
+  background-color: var(--fire-ash);
+  color: #aaa;
+  border: 1px solid var(--fire-smoke);
+  font-size: 0.72rem;
+}
+#connection-count.active {
+  background-color: var(--fire-yellow);
+  color: var(--fire-black);
+  border-color: var(--fire-yellow);
+  font-weight: 700;
+}
+
+/* ── Add button ───────────────────────────────────────────────────────────── */
+#btn-add-server {
+  background-color: var(--fire-yellow);
+  color: var(--fire-black);
+  border: none;
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  transition: background 0.15s;
+}
+#btn-add-server:hover {
+  background-color: var(--fire-amber);
+  color: #fff;
+}
+
+/* ── Dashboard grid ───────────────────────────────────────────────────────── */
 #dashboard {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
@@ -35,83 +94,280 @@ body {
   align-content: start;
 }
 
-/* Connection card */
-.connection-card {
-  border-left: 4px solid var(--color-stopped);
-  transition: border-color 0.2s;
+/* ── Empty state ──────────────────────────────────────────────────────────── */
+#empty-state {
+  background-color: var(--fire-charcoal);
+  border: 1px dashed var(--fire-smoke);
+  color: var(--fire-grey);
+  border-radius: 8px;
 }
-.connection-card.running  { border-left-color: var(--color-running); }
-.connection-card.starting { border-left-color: var(--color-starting); }
-.connection-card.error    { border-left-color: var(--color-error); }
+
+/* ── Connection card ──────────────────────────────────────────────────────── */
+.connection-card {
+  background-color: var(--fire-charcoal);
+  border: 1px solid var(--fire-ash);
+  border-left: 4px solid var(--fire-smoke);
+  border-radius: 8px;
+  transition: border-left-color 0.2s, box-shadow 0.2s;
+  box-shadow: none;
+}
+.connection-card:hover {
+  box-shadow: 0 2px 16px rgba(255, 210, 0, 0.08);
+}
+.connection-card.running  { border-left-color: var(--fire-yellow); }
+.connection-card.starting { border-left-color: var(--fire-amber); }
+.connection-card.error    { border-left-color: var(--fire-red); }
+.connection-card.stopped  { border-left-color: var(--fire-smoke); }
+
+.card-content { background: transparent; }
+
+.connection-name {
+  color: #f0f0f0;
+  font-weight: 600;
+}
+
+.type-badge {
+  background-color: var(--fire-ash) !important;
+  color: #aaa !important;
+  border: 1px solid var(--fire-smoke) !important;
+  font-size: 0.68rem !important;
+}
 
 .url-display {
-  font-family: monospace;
-  font-size: 0.78rem;
-  color: #555;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.76rem;
+  color: var(--fire-grey);
   word-break: break-all;
 }
+.connection-card.running .url-display {
+  color: var(--fire-yellow);
+}
 
-/* Audit panel */
+.root-path-display {
+  font-size: 0.7rem;
+  color: var(--fire-smoke);
+}
+
+/* ── Card buttons ─────────────────────────────────────────────────────────── */
+.start-btn {
+  background-color: var(--fire-yellow) !important;
+  color: var(--fire-black) !important;
+  border: none !important;
+  font-weight: 600 !important;
+}
+.start-btn:hover {
+  background-color: var(--fire-amber) !important;
+  color: #fff !important;
+}
+
+.stop-btn {
+  background-color: transparent !important;
+  color: var(--fire-red) !important;
+  border: 1px solid var(--fire-red) !important;
+}
+.stop-btn:hover {
+  background-color: var(--fire-red) !important;
+  color: #fff !important;
+}
+
+.copy-url-btn {
+  background-color: var(--fire-ash) !important;
+  color: #ccc !important;
+  border: 1px solid var(--fire-smoke) !important;
+}
+.copy-url-btn:hover {
+  border-color: var(--fire-yellow) !important;
+  color: var(--fire-yellow) !important;
+}
+
+.delete-btn {
+  background: transparent !important;
+  color: var(--fire-smoke) !important;
+  border: 1px solid var(--fire-ash) !important;
+}
+.delete-btn:hover {
+  color: var(--fire-red) !important;
+  border-color: var(--fire-red) !important;
+}
+
+/* ── Status dot ───────────────────────────────────────────────────────────── */
+.status-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background-color: var(--fire-smoke);
+}
+.status-dot.running  {
+  background-color: var(--fire-yellow);
+  box-shadow: 0 0 6px var(--fire-yellow);
+}
+.status-dot.starting {
+  background-color: var(--fire-amber);
+  box-shadow: 0 0 6px var(--fire-amber);
+  animation: pulse 1s infinite;
+}
+.status-dot.error    { background-color: var(--fire-red); }
+.status-dot.stopped  { background-color: var(--fire-smoke); }
+
+@keyframes pulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
+/* ── Audit panel ──────────────────────────────────────────────────────────── */
+#audit-panel {
+  background-color: var(--fire-charcoal);
+  border: 1px solid var(--fire-ash);
+  border-radius: 8px;
+}
+
+.audit-panel-title {
+  color: #aaa;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+#audit-chevron { color: var(--fire-grey); font-size: 0.8rem; }
+
 .audit-scroll {
   max-height: 320px;
   overflow-y: auto;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
 }
+.audit-scroll::-webkit-scrollbar       { width: 4px; }
+.audit-scroll::-webkit-scrollbar-track { background: var(--fire-black); }
+.audit-scroll::-webkit-scrollbar-thumb { background: var(--fire-ash); border-radius: 2px; }
 
 .audit-row {
-  padding: 2px 0;
-  border-bottom: 1px solid #f0f0f0;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--fire-ash);
   display: flex;
   gap: 6px;
   align-items: baseline;
 }
-.audit-row .audit-time  { color: #aaa; flex-shrink: 0; }
-.audit-row .audit-tool  { font-weight: 600; }
-.audit-row .audit-path  { color: #555; word-break: break-all; }
-.audit-row.denied .audit-tool { color: var(--color-error); }
-.audit-row.write  .audit-tool { color: #3273dc; }
+.audit-row .audit-time  { color: var(--fire-smoke); flex-shrink: 0; font-family: monospace; }
+.audit-row .audit-tool  { font-weight: 600; color: #ccc; }
+.audit-row .audit-path  { color: var(--fire-grey); word-break: break-all; }
+.audit-row.denied .audit-tool { color: var(--fire-red); }
+.audit-row.write  .audit-tool { color: var(--fire-amber); }
 
-/* Navbar brand */
-.navbar-brand .navbar-item {
+/* ── Modal ────────────────────────────────────────────────────────────────── */
+.modal-card {
+  background-color: var(--fire-charcoal) !important;
+  border: 1px solid var(--fire-ash);
+  border-radius: 10px;
+}
+
+.modal-card-head {
+  background-color: var(--fire-ash) !important;
+  border-bottom: 1px solid var(--fire-smoke) !important;
+  border-radius: 10px 10px 0 0 !important;
+}
+
+.modal-card-title {
+  color: #f0f0f0 !important;
   font-weight: 700;
-  letter-spacing: 0.05em;
 }
 
-/* Add button */
-#btn-add-server {
-  gap: 6px;
+.modal-card-body {
+  background-color: var(--fire-charcoal) !important;
+  color: #ddd;
 }
 
-/* Modal wizard step */
+.modal-card-foot {
+  background-color: var(--fire-ash) !important;
+  border-top: 1px solid var(--fire-smoke) !important;
+  border-radius: 0 0 10px 10px !important;
+}
+
+/* Form fields in modal */
+.label { color: #ccc !important; }
+
+.input, .select select {
+  background-color: var(--fire-black) !important;
+  border-color: var(--fire-smoke) !important;
+  color: #e8e8e8 !important;
+}
+.input:focus, .select select:focus {
+  border-color: var(--fire-yellow) !important;
+  box-shadow: 0 0 0 2px rgba(255,210,0,0.15) !important;
+}
+.input::placeholder { color: var(--fire-grey) !important; }
+
+/* ── Type choice cards ────────────────────────────────────────────────────── */
 .type-choice-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
-  margin-top: 1rem;
+  margin-top: 0.75rem;
 }
 
 .type-choice-card {
-  border: 2px solid #dbdbdb;
-  border-radius: 6px;
+  background-color: var(--fire-black);
+  border: 2px solid var(--fire-ash);
+  border-radius: 8px;
   padding: 1.5rem 1rem;
   text-align: center;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
+  color: #ccc;
 }
 .type-choice-card:hover,
 .type-choice-card.selected {
-  border-color: #3273dc;
-  background: #f0f5ff;
+  border-color: var(--fire-yellow);
+  background-color: rgba(255, 210, 0, 0.06);
+  color: #f0f0f0;
 }
-.type-choice-card .type-icon {
-  font-size: 2rem;
-  margin-bottom: 0.5rem;
+.type-choice-card .type-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+.type-choice-card p:last-child { color: var(--fire-grey); font-size: 0.75rem; }
+.type-choice-card.selected p:last-child { color: #aaa; }
+
+/* ── Modal buttons ────────────────────────────────────────────────────────── */
+.modal-card-foot .button.is-primary,
+.modal-card-foot #btn-next,
+.modal-card-foot #btn-create {
+  background-color: var(--fire-yellow) !important;
+  color: var(--fire-black) !important;
+  border: none !important;
+  font-weight: 700;
+}
+.modal-card-foot .button.is-primary:hover,
+.modal-card-foot #btn-next:hover,
+.modal-card-foot #btn-create:hover {
+  background-color: var(--fire-amber) !important;
+  color: #fff !important;
 }
 
-/* Port field warning */
-.port-warning {
-  display: none;
+.modal-card-foot .button.is-light,
+.modal-card-foot #btn-back {
+  background-color: var(--fire-ash) !important;
+  color: #ccc !important;
+  border: 1px solid var(--fire-smoke) !important;
 }
-.port-warning.visible {
-  display: block;
+
+/* ── Port warning ─────────────────────────────────────────────────────────── */
+.port-warning { display: none; color: var(--fire-amber); }
+.port-warning.visible { display: block; }
+
+/* ── Port reassignment notification ──────────────────────────────────────── */
+#port-notification {
+  background-color: var(--fire-charcoal) !important;
+  border: 1px solid var(--fire-amber) !important;
+  border-left: 4px solid var(--fire-amber) !important;
+  color: #e8e8e8 !important;
+}
+
+/* ── Modal background ─────────────────────────────────────────────────────── */
+.modal-background { background-color: rgba(0,0,0,0.72) !important; }
+
+/* ── Delete button (Bulma .delete) ───────────────────────────────────────── */
+.modal-card-head .delete {
+  background-color: var(--fire-smoke) !important;
+}
+.modal-card-head .delete:hover {
+  background-color: var(--fire-red) !important;
 }

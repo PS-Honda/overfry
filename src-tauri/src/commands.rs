@@ -1,13 +1,14 @@
-use std::sync::Mutex;
-
 use chrono::Utc;
-use tauri::{AppHandle, Manager, State};
+use serde_json::json;
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::{
     error::AppError,
+    filesystem_server,
     models::{AuditEntry, Connection, ConnectionStatus, ConnectionType, CreateConnectionRequest},
     port_manager,
+    server_manager::ServerManager,
     store::StoreState,
 };
 
@@ -55,7 +56,14 @@ pub fn create_connection(
 }
 
 #[tauri::command]
-pub fn delete_connection(store: State<StoreState>, id: String) -> CmdResult<()> {
+pub fn delete_connection(
+    store: State<StoreState>,
+    server_mgr: State<ServerManager>,
+    id: String,
+) -> CmdResult<()> {
+    // Stop server if running (ignore error — may already be stopped)
+    let _ = server_mgr.shutdown(&id);
+
     let s = store.0.lock().unwrap();
 
     let mut conns = s.load_connections().map_err(|e| e.to_string())?;
@@ -76,21 +84,112 @@ pub fn suggest_port(store: State<StoreState>, requested: Option<u16>) -> CmdResu
     Ok(port_manager::suggest_port(&cfg, requested))
 }
 
-// ── Server lifecycle (stubs — filled in Milestone 3) ──────────────────────────
+// ── Server lifecycle ───────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn start_server(_id: String) -> CmdResult<String> {
-    Err("MCP server not implemented yet (Milestone 3)".into())
+pub async fn start_server(
+    app: AppHandle,
+    store: State<'_, StoreState>,
+    server_mgr: State<'_, ServerManager>,
+    id: String,
+) -> CmdResult<()> {
+    let conn = {
+        let s = store.0.lock().unwrap();
+        s.load_connections()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|c| c.id.to_string() == id)
+            .ok_or_else(|| AppError::ConnectionNotFound.to_string())?
+    };
+
+    if server_mgr.is_running(&id) {
+        return Err(AppError::ServerAlreadyRunning.to_string());
+    }
+
+    let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Starting"}));
+
+    let router = match conn.connection_type {
+        ConnectionType::Filesystem | ConnectionType::ObsidianFilesystem => {
+            filesystem_server::create_router(conn.root_paths.clone())
+        }
+        ConnectionType::RemoteProxy => {
+            return Err("RemoteProxy not implemented yet (Milestone 5)".into());
+        }
+    };
+
+    let addr = format!("127.0.0.1:{}", conn.port);
+    let listener = tokio::net::TcpListener::bind(&addr).await
+        .map_err(|e| format!("bind {addr}: {e}"))?;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    server_mgr.register(&id, shutdown_tx).map_err(|e| e.to_string())?;
+
+    let app_clone = app.clone();
+    let id_clone = id.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = axum::serve(listener, router)
+            .with_graceful_shutdown(async { let _ = shutdown_rx.await; })
+            .await;
+
+        if let Err(e) = result {
+            tracing::error!("server {id_clone} crashed: {e}");
+            if let Some(state) = app_clone.try_state::<StoreState>() {
+                let s = state.0.lock().unwrap();
+                if let Ok(mut conns) = s.load_connections() {
+                    if let Some(c) = conns.iter_mut().find(|c| c.id.to_string() == id_clone) {
+                        c.status = ConnectionStatus::Error(e.to_string());
+                        c.updated_at = Utc::now();
+                    }
+                    let _ = s.save_connections(&conns);
+                }
+            }
+            let _ = app_clone.emit(
+                "connection-status-changed",
+                json!({"id": id_clone, "status": "Error", "message": e.to_string()}),
+            );
+        }
+    });
+
+    {
+        let s = store.0.lock().unwrap();
+        let mut conns = s.load_connections().map_err(|e| e.to_string())?;
+        if let Some(c) = conns.iter_mut().find(|c| c.id.to_string() == id) {
+            c.status = ConnectionStatus::Running;
+            c.updated_at = Utc::now();
+        }
+        s.save_connections(&conns).map_err(|e| e.to_string())?;
+    }
+
+    let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Running"}));
+    Ok(())
 }
 
 #[tauri::command]
-pub fn stop_server(_id: String) -> CmdResult<()> {
-    Err("MCP server not implemented yet (Milestone 3)".into())
+pub async fn stop_server(
+    app: AppHandle,
+    store: State<'_, StoreState>,
+    server_mgr: State<'_, ServerManager>,
+    id: String,
+) -> CmdResult<()> {
+    server_mgr.shutdown(&id).map_err(|e| e.to_string())?;
+
+    {
+        let s = store.0.lock().unwrap();
+        let mut conns = s.load_connections().map_err(|e| e.to_string())?;
+        if let Some(c) = conns.iter_mut().find(|c| c.id.to_string() == id) {
+            c.status = ConnectionStatus::Stopped;
+            c.updated_at = Utc::now();
+        }
+        s.save_connections(&conns).map_err(|e| e.to_string())?;
+    }
+
+    let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Stopped"}));
+    Ok(())
 }
 
 #[tauri::command]
-pub fn get_server_status(_id: String) -> CmdResult<String> {
-    Ok("Stopped".into())
+pub fn get_server_status(server_mgr: State<ServerManager>, id: String) -> CmdResult<String> {
+    Ok(if server_mgr.is_running(&id) { "Running".into() } else { "Stopped".into() })
 }
 
 // ── Folder picker ──────────────────────────────────────────────────────────────

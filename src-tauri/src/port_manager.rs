@@ -1,13 +1,6 @@
-use std::{
-    net::TcpListener,
-    sync::Mutex,
-};
+use std::net::TcpListener;
 
-use crate::{error::AppError, models::PortConfig, store::StoreState};
-
-pub struct PortManager {
-    store: &'static StoreState,
-}
+use crate::{error::AppError, models::PortConfig};
 
 /// Probe whether a TCP port is free on 127.0.0.1.
 pub fn is_port_free(port: u16) -> bool {
@@ -88,8 +81,6 @@ pub fn suggest_port(cfg: &PortConfig, requested: Option<u16>) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-
     fn make_cfg(assignments: Vec<(&str, u16)>) -> PortConfig {
         PortConfig {
             base: 50000, max: 59999,

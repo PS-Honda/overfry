@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_store::{Store, StoreExt};
 
 use crate::{error::AppError, models::{Connection, PortConfig}};

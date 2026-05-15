@@ -13,7 +13,7 @@ anyhow       = "1"
 thiserror    = "2"
 tracing      = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-moka         = { version = "0.12", features = ["future"] }
+moka         = { version = "0.12", features = ["future", "sync"] }
 tempfile     = "3"
 notify       = "6"
 reqwest      = { version = "0.12", features = ["json", "stream"] }
