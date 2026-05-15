@@ -8,6 +8,7 @@ use crate::{
     error::AppError,
     filesystem_server,
     models::{AuditEntry, Connection, ConnectionStatus, ConnectionType, CreateConnectionRequest},
+    obsidian_fs_server,
     port_manager,
     proxy_server,
     server_manager::ServerManager,
@@ -111,8 +112,11 @@ pub async fn start_server(
     let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Starting"}));
 
     let router = match conn.connection_type {
-        ConnectionType::Filesystem | ConnectionType::ObsidianFilesystem => {
+        ConnectionType::Filesystem => {
             filesystem_server::create_router(conn.root_paths.clone(), conn.id, app.clone())
+        }
+        ConnectionType::ObsidianFilesystem => {
+            obsidian_fs_server::create_router(conn.root_paths.clone(), conn.id, app.clone())
         }
         ConnectionType::RemoteProxy => {
             let auth = conn.auth_config

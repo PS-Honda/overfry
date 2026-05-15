@@ -3,6 +3,7 @@ mod commands;
 mod error;
 mod filesystem_server;
 mod models;
+mod obsidian_fs_server;
 mod port_manager;
 mod proxy_server;
 mod security;

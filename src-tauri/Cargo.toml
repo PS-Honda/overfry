@@ -40,6 +40,9 @@ ignore             = { workspace = true }
 regex              = { workspace = true }
 tower              = { workspace = true }
 tower-http         = { workspace = true }
+gray_matter        = { workspace = true }
+pulldown-cmark     = { workspace = true }
+serde_yaml         = { workspace = true }
 
 [profile.release]
 opt-level     = 3
