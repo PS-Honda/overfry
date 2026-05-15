@@ -1,0 +1,143 @@
+name: Release Builds
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Which variants to build"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - lightweight-only
+          - semantic-only
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows
+            variant: lightweight
+            features: ""
+            artifact_name: Overfry-windows-lightweight
+          - os: macos-latest
+            label: macos
+            variant: lightweight
+            features: ""
+            artifact_name: Overfry-macos-lightweight
+          - os: windows-latest
+            label: windows
+            variant: semantic
+            features: "--features semantic-search"
+            artifact_name: Overfry-windows-semantic
+          - os: macos-latest
+            label: macos
+            variant: semantic
+            features: "--features semantic-search"
+            artifact_name: Overfry-macos-semantic
+
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.label }} / ${{ matrix.variant }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-${{ matrix.variant }}
+
+      - name: Install Node (for Tauri CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2
+
+      # macOS: install system deps
+      - name: Install macOS dependencies
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew update
+          brew install create-dmg
+
+      # Windows: install WebView2 (already on GitHub runners, but be explicit)
+      - name: Verify WebView2 (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Get-ChildItem "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients" -ErrorAction SilentlyContinue
+
+      - name: Build (lightweight)
+        if: matrix.variant == 'lightweight'
+        run: cargo tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Build (with semantic search)
+        if: matrix.variant == 'semantic'
+        run: cargo tauri build ${{ matrix.features }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # ── Collect artifacts ─────────────────────────────────────────
+
+      - name: Collect Windows artifacts
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $outDir = "dist/${{ matrix.artifact_name }}"
+          New-Item -ItemType Directory -Force -Path $outDir
+          Copy-Item "target/release/bundle/msi/*.msi"         $outDir -ErrorAction SilentlyContinue
+          Copy-Item "target/release/bundle/nsis/*-setup.exe"  $outDir -ErrorAction SilentlyContinue
+          Copy-Item "target/release/overfry.exe"              $outDir -ErrorAction SilentlyContinue
+
+      - name: Collect macOS artifacts
+        if: matrix.os == 'macos-latest'
+        run: |
+          outDir="dist/${{ matrix.artifact_name }}"
+          mkdir -p "$outDir"
+          cp -r target/release/bundle/dmg/*.dmg    "$outDir/" 2>/dev/null || true
+          cp -r target/release/bundle/macos/*.app  "$outDir/" 2>/dev/null || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}/
+          retention-days: 30
+
+  # ── GitHub Release (tag pushes only) ─────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
