@@ -3,9 +3,11 @@ use std::{
     convert::Infallible,
     io::Write,
     path::PathBuf,
-    sync::Arc,
+    sync::{mpsc, Arc},
     time::Duration,
 };
+
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
 use axum::{
     body::Bytes,
@@ -92,6 +94,34 @@ pub fn create_router(
             .build(),
         app,
     });
+
+    // Spawn a watcher thread that invalidates the cache on any FS event
+    let cache_clone = state.dir_cache.clone();
+    let root_paths_clone = state.root_paths.clone();
+    std::thread::spawn(move || {
+        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+        let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!("notify watcher failed to create: {e}");
+                return;
+            }
+        };
+        for root in &root_paths_clone {
+            if let Err(e) = watcher.watch(root, RecursiveMode::Recursive) {
+                tracing::warn!("notify watch failed for {}: {e}", root.display());
+            }
+        }
+        for result in rx {
+            match result {
+                Ok(_event) => {
+                    cache_clone.invalidate_all();
+                }
+                Err(e) => tracing::warn!("notify error: {e}"),
+            }
+        }
+    });
+
     Router::new()
         .route("/mcp", get(handle_sse).post(handle_rpc))
         .with_state(state)
@@ -249,7 +279,7 @@ fn reconstruct_file(fm_value: &Value, body: &str) -> Result<String, AppError> {
     let yaml_body = yaml_str
         .strip_prefix("---\n")
         .unwrap_or(&yaml_str);
-    Ok(format!("---\n{}---\n{}", yaml_body, body))
+    Ok(format!("---\n{yaml_body}---\n{body}"))
 }
 
 // ── Heading section finder ─────────────────────────────────────────────────────
@@ -658,7 +688,7 @@ fn call_tool(state: &FsState, name: &str, args: Value) -> Result<Value, AppError
                     let _ = heading_line_end; // used implicitly via section_start
 
                     let new_section = match operation {
-                        "replace" => format!("{patch_content}"),
+                        "replace" => patch_content.to_string(),
                         "append" => {
                             // Trim trailing newline from section for clean append
                             let trimmed = section_body.trim_end_matches('\n');

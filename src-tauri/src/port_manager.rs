@@ -17,9 +17,7 @@ pub fn next_free_port(
     let used: std::collections::HashSet<u16> = assignments.values().copied()
         .chain(exclude)
         .collect();
-    (base..=max)
-        .filter(|p| !used.contains(p) && is_port_free(*p))
-        .next()
+    (base..=max).find(|p| !used.contains(p) && is_port_free(*p))
 }
 
 /// Validate all stored port assignments on startup.

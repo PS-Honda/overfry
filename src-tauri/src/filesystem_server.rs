@@ -2,9 +2,11 @@ use std::{
     convert::Infallible,
     io::{self, Write},
     path::PathBuf,
-    sync::Arc,
+    sync::{mpsc, Arc},
     time::Duration,
 };
+
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
 use axum::{
     body::Bytes,
@@ -90,6 +92,34 @@ pub fn create_router(
             .build(),
         app,
     });
+
+    // Spawn a watcher thread that invalidates the cache on any FS event
+    let cache_clone = state.dir_cache.clone();
+    let root_paths_clone = state.root_paths.clone();
+    std::thread::spawn(move || {
+        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+        let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!("notify watcher failed to create: {e}");
+                return;
+            }
+        };
+        for root in &root_paths_clone {
+            if let Err(e) = watcher.watch(root, RecursiveMode::Recursive) {
+                tracing::warn!("notify watch failed for {}: {e}", root.display());
+            }
+        }
+        for result in rx {
+            match result {
+                Ok(_event) => {
+                    cache_clone.invalidate_all();
+                }
+                Err(e) => tracing::warn!("notify error: {e}"),
+            }
+        }
+    });
+
     Router::new()
         .route("/mcp", get(handle_sse).post(handle_rpc))
         .with_state(state)
