@@ -1,3 +1,4 @@
+mod audit;
 mod commands;
 mod error;
 mod filesystem_server;
@@ -9,6 +10,7 @@ mod store;
 
 use std::sync::Mutex;
 
+use audit::{AuditLog, AuditState};
 use commands::*;
 use models::ConnectionStatus;
 use server_manager::ServerManager;
@@ -22,6 +24,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            // Set up audit log in the app log directory
+            let log_dir = app.path().app_log_dir()?;
+            std::fs::create_dir_all(&log_dir)?;
+            let audit_path = log_dir.join("audit.ndjson");
+            app.manage(AuditState(AuditLog::new(audit_path)));
+
             let store = AppStore::new(app.handle().clone());
             app.manage(StoreState(Mutex::new(store)));
             app.manage(ServerManager::new());

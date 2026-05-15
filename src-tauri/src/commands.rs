@@ -4,6 +4,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::{
+    audit::AuditState,
     error::AppError,
     filesystem_server,
     models::{AuditEntry, Connection, ConnectionStatus, ConnectionType, CreateConnectionRequest},
@@ -110,7 +111,7 @@ pub async fn start_server(
 
     let router = match conn.connection_type {
         ConnectionType::Filesystem | ConnectionType::ObsidianFilesystem => {
-            filesystem_server::create_router(conn.root_paths.clone())
+            filesystem_server::create_router(conn.root_paths.clone(), conn.id, app.clone())
         }
         ConnectionType::RemoteProxy => {
             return Err("RemoteProxy not implemented yet (Milestone 5)".into());
@@ -201,9 +202,12 @@ pub async fn pick_folder(app: AppHandle) -> CmdResult<Option<String>> {
     Ok(path.map(|p| p.to_string()))
 }
 
-// ── Audit log (stub — Milestone 4) ────────────────────────────────────────────
+// ── Audit log ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_audit_log(_limit: Option<usize>) -> CmdResult<Vec<AuditEntry>> {
-    Ok(vec![])
+pub fn get_audit_log(
+    audit: State<'_, AuditState>,
+    limit: Option<usize>,
+) -> CmdResult<Vec<AuditEntry>> {
+    Ok(audit.0.recent(limit.unwrap_or(200)))
 }

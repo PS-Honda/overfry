@@ -22,4 +22,4 @@ futures      = "0.3"
 ignore       = "0.4"
 regex        = "1"
 tower        = { version = "0.5", features = ["limit", "util"] }
-tower-http   = { version = "0.6", features = ["trace", "cors"] }
+tower-http   = { version = "0.6", features = ["trace", "cors", "limit"] }
