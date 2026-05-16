@@ -1,4 +1,4 @@
-import { loadDashboard, updateCardStatus } from "./dashboard.js";
+import { loadDashboard, updateCardStatus, handlePortChanged } from "./dashboard.js";
 import { appendAuditEntry } from "./audit.js";
 import { openModal } from "./modal.js";
 
@@ -21,27 +21,7 @@ function wireTauriEvents() {
     appendAuditEntry(payload);
   });
 
-  listen("port-reassigned", ({ payload }) => {
-    showPortNotification(payload.old_port, payload.new_port);
+  listen("global-port-changed", ({ payload }) => {
+    if (payload?.port) handlePortChanged(payload.port);
   });
-}
-
-function showPortNotification(oldPort, newPort) {
-  document.getElementById("port-notification")?.remove();
-
-  const notif = document.createElement("div");
-  notif.id = "port-notification";
-  notif.className = "notification is-warning is-light";
-  notif.style.cssText = "position:fixed;bottom:1rem;right:1rem;max-width:360px;z-index:100;";
-
-  const delBtn = document.createElement("button");
-  delBtn.className = "delete";
-  delBtn.addEventListener("click", () => notif.remove());
-
-  const msg = document.createElement("span");
-  msg.textContent = `Port conflict: connection reassigned from ${oldPort} to ${newPort}. Restart Claude MCP connection to use new URL.`;
-
-  notif.append(delBtn, msg);
-  document.body.appendChild(notif);
-  setTimeout(() => notif.remove(), 8000);
 }

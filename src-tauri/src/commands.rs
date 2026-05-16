@@ -1,22 +1,73 @@
 use chrono::Utc;
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
     audit::AuditState,
     error::AppError,
     filesystem_server,
-    models::{AuditEntry, AuthMethod, Connection, ConnectionStatus, ConnectionType, ConnectionView, CreateConnectionRequest},
+    global_server::GlobalServer,
+    models::{
+        AuditEntry, AuthMethod, Connection, ConnectionStatus, ConnectionType, ConnectionView,
+        CreateConnectionRequest, PortConfig,
+    },
     oauth,
     obsidian_fs_server,
-    port_manager,
     proxy_server,
-    server_manager::ServerManager,
     store::StoreState,
 };
 
 type CmdResult<T> = Result<T, String>;
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+/// Validate and normalise an mcp_path from user input.
+fn normalise_mcp_path(raw: Option<String>, name: &str) -> String {
+    let p = raw.unwrap_or_default();
+    let p = p.trim().to_string();
+    if p.starts_with('/') && !p.contains(' ') && p.len() <= 64 {
+        p
+    } else {
+        // auto-slug from name
+        let slug = name
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        format!("/mcp/{slug}")
+    }
+}
+
+/// Build the axum Router for a connection (does NOT bind a port).
+fn build_router(
+    conn: &Connection,
+    app: &AppHandle,
+) -> CmdResult<axum::Router> {
+    match conn.connection_type {
+        ConnectionType::Filesystem => Ok(filesystem_server::create_router(
+            conn.root_paths.clone(),
+            conn.id,
+            app.clone(),
+            conn.mcp_path.clone(),
+        )),
+        ConnectionType::ObsidianFilesystem => Ok(obsidian_fs_server::create_router(
+            conn.root_paths.clone(),
+            conn.id,
+            app.clone(),
+            conn.mcp_path.clone(),
+        )),
+        ConnectionType::RemoteProxy => {
+            let auth = conn.auth_config.clone()
+                .ok_or("RemoteProxy connection missing auth_config")?;
+            proxy_server::create_router(conn.id, auth, app.clone(), conn.mcp_path.clone())
+                .map_err(|e| e.to_string())
+        }
+    }
+}
 
 // ── Connection CRUD ────────────────────────────────────────────────────────────
 
@@ -34,31 +85,17 @@ pub fn create_connection(
 ) -> CmdResult<ConnectionView> {
     let s = store.0.lock().unwrap();
 
-    let mut port_cfg = s.load_port_config().map_err(|e| e.to_string())?;
-    let id = Uuid::new_v4();
-    let port = port_manager::assign_port(&mut port_cfg, &id.to_string(), req.port)
-        .map_err(|e| e.to_string())?;
-    s.save_port_config(&port_cfg).map_err(|e| e.to_string())?;
-
-    let raw_path = req.mcp_path.unwrap_or_else(|| "/mcp".to_string());
-    let mcp_path = if raw_path.starts_with('/') && !raw_path.contains(' ') && raw_path.len() <= 64 {
-        raw_path
-    } else {
-        "/mcp".to_string()
-    };
-    let use_https = req.use_https.unwrap_or(false);
+    let mcp_path = normalise_mcp_path(req.mcp_path, &req.name);
 
     let now = Utc::now();
     let conn = Connection {
-        id,
+        id:              Uuid::new_v4(),
         name:            req.name,
         connection_type: req.connection_type,
-        port,
         root_paths:      req.root_paths,
         auth_config:     req.auth_config,
         status:          ConnectionStatus::Stopped,
         mcp_path,
-        use_https,
         created_at:      now,
         updated_at:      now,
     };
@@ -71,42 +108,112 @@ pub fn create_connection(
 }
 
 #[tauri::command]
-pub async fn delete_connection(
-    store: State<'_, StoreState>,
-    server_mgr: State<'_, ServerManager>,
-    id: String,
-) -> CmdResult<()> {
-    // Stop server if running (ignore error — may already be stopped)
-    let _ = server_mgr.shutdown(&id).await;
+pub async fn update_connection(
+    app:    AppHandle,
+    store:  State<'_, StoreState>,
+    gs:     State<'_, Mutex<GlobalServer>>,
+    id:     String,
+    req:    CreateConnectionRequest,
+) -> CmdResult<ConnectionView> {
+    // Find existing
+    let existing = {
+        let s = store.0.lock().unwrap();
+        s.load_connections().map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|c| c.id.to_string() == id)
+            .ok_or_else(|| AppError::ConnectionNotFound.to_string())?
+    };
 
+    let was_running = gs.lock().await.is_registered(&existing.mcp_path).await;
+
+    // Stop if running
+    if was_running {
+        gs.lock().await.unregister(&existing.mcp_path).await;
+    }
+
+    let mcp_path = normalise_mcp_path(req.mcp_path, &req.name);
+    let now = Utc::now();
+    let updated = Connection {
+        id:              existing.id,
+        name:            req.name,
+        connection_type: req.connection_type,
+        root_paths:      req.root_paths,
+        auth_config:     req.auth_config,
+        status:          ConnectionStatus::Stopped,
+        mcp_path,
+        created_at:      existing.created_at,
+        updated_at:      now,
+    };
+
+    // Save
+    {
+        let s = store.0.lock().unwrap();
+        let mut conns = s.load_connections().map_err(|e| e.to_string())?;
+        if let Some(pos) = conns.iter().position(|c| c.id.to_string() == id) {
+            conns[pos] = updated.clone();
+        }
+        s.save_connections(&conns).map_err(|e| e.to_string())?;
+    }
+
+    // Restart if was running
+    if was_running {
+        let router = build_router(&updated, &app)?;
+        {
+            let s  = store.0.lock().unwrap();
+            let mut conns = s.load_connections().map_err(|e| e.to_string())?;
+            if let Some(c) = conns.iter_mut().find(|c| c.id.to_string() == id) {
+                c.status = ConnectionStatus::Running;
+                c.updated_at = Utc::now();
+            }
+            s.save_connections(&conns).map_err(|e| e.to_string())?;
+        }
+        gs.lock().await.register(updated.mcp_path.clone(), router).await;
+        let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Running"}));
+    } else {
+        let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Stopped"}));
+    }
+
+    // Re-fetch to get current status
     let s = store.0.lock().unwrap();
-
-    let mut conns = s.load_connections().map_err(|e| e.to_string())?;
-    conns.retain(|c| c.id.to_string() != id);
-    s.save_connections(&conns).map_err(|e| e.to_string())?;
-
-    let mut port_cfg = s.load_port_config().map_err(|e| e.to_string())?;
-    port_manager::release_port(&mut port_cfg, &id);
-    s.save_port_config(&port_cfg).map_err(|e| e.to_string())
+    let conns = s.load_connections().map_err(|e| e.to_string())?;
+    let conn = conns.into_iter().find(|c| c.id.to_string() == id)
+        .ok_or_else(|| AppError::ConnectionNotFound.to_string())?;
+    Ok(ConnectionView::from(conn))
 }
 
-// ── Port ───────────────────────────────────────────────────────────────────────
-
 #[tauri::command]
-pub fn suggest_port(store: State<StoreState>, requested: Option<u16>) -> CmdResult<u16> {
+pub async fn delete_connection(
+    store: State<'_, StoreState>,
+    gs:    State<'_, Mutex<GlobalServer>>,
+    id:    String,
+) -> CmdResult<()> {
+    // Find mcp_path first for unregister
+    let mcp_path = {
+        let s = store.0.lock().unwrap();
+        s.load_connections().map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|c| c.id.to_string() == id)
+            .map(|c| c.mcp_path)
+    };
+
+    if let Some(path) = mcp_path {
+        gs.lock().await.unregister(&path).await;
+    }
+
     let s = store.0.lock().unwrap();
-    let cfg = s.load_port_config().map_err(|e| e.to_string())?;
-    Ok(port_manager::suggest_port(&cfg, requested))
+    let mut conns = s.load_connections().map_err(|e| e.to_string())?;
+    conns.retain(|c| c.id.to_string() != id);
+    s.save_connections(&conns).map_err(|e| e.to_string())
 }
 
 // ── Server lifecycle ───────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn start_server(
-    app: AppHandle,
+    app:   AppHandle,
     store: State<'_, StoreState>,
-    server_mgr: State<'_, ServerManager>,
-    id: String,
+    gs:    State<'_, Mutex<GlobalServer>>,
+    id:    String,
 ) -> CmdResult<()> {
     let conn = {
         let s = store.0.lock().unwrap();
@@ -117,103 +224,20 @@ pub async fn start_server(
             .ok_or_else(|| AppError::ConnectionNotFound.to_string())?
     };
 
-    if server_mgr.is_running(&id) {
-        return Err(AppError::ServerAlreadyRunning.to_string());
+    {
+        let gs_lock = gs.lock().await;
+        if gs_lock.is_registered(&conn.mcp_path).await {
+            return Err(AppError::ServerAlreadyRunning.to_string());
+        }
     }
 
     let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Starting"}));
 
-    let router = match conn.connection_type {
-        ConnectionType::Filesystem => {
-            filesystem_server::create_router(conn.root_paths.clone(), conn.id, app.clone(), conn.mcp_path.clone())
-        }
-        ConnectionType::ObsidianFilesystem => {
-            obsidian_fs_server::create_router(conn.root_paths.clone(), conn.id, app.clone(), conn.mcp_path.clone())
-        }
-        ConnectionType::RemoteProxy => {
-            let auth = conn.auth_config
-                .ok_or_else(|| "RemoteProxy connection missing auth_config".to_string())?;
-            proxy_server::create_router(conn.id, auth, app.clone(), conn.mcp_path.clone())
-                .map_err(|e| e.to_string())?
-        }
-    };
+    let router = build_router(&conn, &app)?;
 
-    let addr = format!("127.0.0.1:{}", conn.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await
-        .map_err(|e| format!("bind {addr}: {e}"))?;
+    gs.lock().await.register(conn.mcp_path.clone(), router).await;
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let app_clone = app.clone();
-    let id_clone = id.clone();
-    let use_https = conn.use_https;
-
-    let join_handle = if use_https {
-        let data_dir = app.path().app_data_dir()
-            .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?
-            .join("certs");
-        let (cert_pem, key_pem) = crate::tls::ensure_cert(&data_dir).map_err(|e| e.to_string())?;
-        let tls_config = crate::tls::make_tls_config(&cert_pem, &key_pem).map_err(|e| e.to_string())?;
-        let tls_acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config));
-
-        tauri::async_runtime::spawn(async move {
-            let mut shutdown_rx = shutdown_rx;
-            loop {
-                let (stream, _) = tokio::select! {
-                    res = listener.accept() => match res {
-                        Ok(v) => v,
-                        Err(e) => {
-                            tracing::error!("TLS listener accept error: {e}");
-                            break;
-                        }
-                    },
-                    _ = &mut shutdown_rx => break,
-                };
-                let acceptor = tls_acceptor.clone();
-                let tower_service = router.clone();
-                tokio::spawn(async move {
-                    if let Ok(tls_stream) = acceptor.accept(stream).await {
-                        let io = hyper_util::rt::TokioIo::new(tls_stream);
-                        let hyper_service = hyper::service::service_fn(move |req| {
-                            use tower::Service;
-                            let mut svc = tower_service.clone();
-                            async move { svc.call(req).await }
-                        });
-                        let _ = hyper::server::conn::http1::Builder::new()
-                            .serve_connection(io, hyper_service)
-                            .await;
-                    }
-                });
-            }
-        })
-    } else {
-        tauri::async_runtime::spawn(async move {
-            let result = axum::serve(listener, router)
-                .with_graceful_shutdown(async { let _ = shutdown_rx.await; })
-                .await;
-
-            if let Err(e) = result {
-                tracing::error!("server {id_clone} crashed: {e}");
-                if let Some(state) = app_clone.try_state::<StoreState>() {
-                    let s = state.0.lock().unwrap();
-                    if let Ok(mut conns) = s.load_connections() {
-                        if let Some(c) = conns.iter_mut().find(|c| c.id.to_string() == id_clone) {
-                            c.status = ConnectionStatus::Error(e.to_string());
-                            c.updated_at = Utc::now();
-                        }
-                        let _ = s.save_connections(&conns);
-                    }
-                }
-                let _ = app_clone.emit(
-                    "connection-status-changed",
-                    json!({"id": id_clone, "status": "Error", "message": e.to_string()}),
-                );
-            }
-        })
-    };
-
-    server_mgr.register(id.to_string(), shutdown_tx, join_handle).map_err(|e| e.to_string())?;
-
+    // Update status in store
     {
         let s = store.0.lock().unwrap();
         let mut conns = s.load_connections().map_err(|e| e.to_string())?;
@@ -230,12 +254,22 @@ pub async fn start_server(
 
 #[tauri::command]
 pub async fn stop_server(
-    app: AppHandle,
+    app:   AppHandle,
     store: State<'_, StoreState>,
-    server_mgr: State<'_, ServerManager>,
-    id: String,
+    gs:    State<'_, Mutex<GlobalServer>>,
+    id:    String,
 ) -> CmdResult<()> {
-    server_mgr.shutdown(&id).await.map_err(|e| e.to_string())?;
+    let mcp_path = {
+        let s = store.0.lock().unwrap();
+        s.load_connections()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|c| c.id.to_string() == id)
+            .map(|c| c.mcp_path)
+            .ok_or_else(|| AppError::ConnectionNotFound.to_string())?
+    };
+
+    gs.lock().await.unregister(&mcp_path).await;
 
     {
         let s = store.0.lock().unwrap();
@@ -252,25 +286,55 @@ pub async fn stop_server(
 }
 
 #[tauri::command]
-pub fn get_server_status(server_mgr: State<ServerManager>, id: String) -> CmdResult<String> {
-    Ok(if server_mgr.is_running(&id) { "Running".into() } else { "Stopped".into() })
+pub async fn get_server_status(
+    gs:  State<'_, Mutex<GlobalServer>>,
+    _id: String,
+) -> CmdResult<String> {
+    // Look up mcp_path by id from store isn't available here without store state;
+    // frontend tracks status via events. Return based on global server being alive.
+    let running = gs.lock().await.is_running();
+    Ok(if running { "Running".into() } else { "Stopped".into() })
 }
 
-// ── Folder picker ──────────────────────────────────────────────────────────────
+// ── Global port ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn pick_folder(app: AppHandle) -> CmdResult<Option<String>> {
-    use tauri_plugin_dialog::DialogExt;
-    let path = app.dialog().file().blocking_pick_folder();
-    Ok(path.map(|p| p.to_string()))
+pub async fn get_global_port(store: State<'_, StoreState>) -> CmdResult<u16> {
+    let s = store.0.lock().unwrap();
+    let cfg = s.load_port_config().map_err(|e| e.to_string())?;
+    Ok(cfg.port)
+}
+
+#[tauri::command]
+pub async fn set_global_port(
+    app:   AppHandle,
+    store: State<'_, StoreState>,
+    gs:    State<'_, Mutex<GlobalServer>>,
+    port:  u16,
+) -> CmdResult<()> {
+    if port < 1024 {
+        return Err("Port must be >= 1024".to_string());
+    }
+
+    // Save to store
+    {
+        let s = store.0.lock().unwrap();
+        s.save_port_config(&PortConfig { port }).map_err(|e| e.to_string())?;
+    }
+
+    // Restart server on new port
+    gs.lock().await.restart_on_port(port).await.map_err(|e| e.to_string())?;
+
+    let _ = app.emit("global-port-changed", json!({"port": port}));
+    Ok(())
 }
 
 // ── OAuth flow ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn start_oauth_flow(
-    app:   AppHandle,
-    store: State<'_, StoreState>,
+    app:           AppHandle,
+    store:         State<'_, StoreState>,
     connection_id: String,
 ) -> CmdResult<()> {
     let conn = {
@@ -301,7 +365,6 @@ pub async fn start_oauth_flow(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Persist tokens
     {
         let s = store.0.lock().unwrap();
         let mut conns = s.load_connections().map_err(|e| e.to_string())?;
@@ -315,8 +378,17 @@ pub async fn start_oauth_flow(
         s.save_connections(&conns).map_err(|e| e.to_string())?;
     }
 
-    let _ = app.emit("oauth-complete", serde_json::json!({ "id": connection_id, "success": true }));
+    let _ = app.emit("oauth-complete", json!({ "id": connection_id, "success": true }));
     Ok(())
+}
+
+// ── Folder picker ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn pick_folder(app: AppHandle) -> CmdResult<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+    let path = app.dialog().file().blocking_pick_folder();
+    Ok(path.map(|p| p.to_string()))
 }
 
 // ── Audit log ─────────────────────────────────────────────────────────────────

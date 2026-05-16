@@ -20,6 +20,7 @@
   <div class="navbar-menu is-active">
     <div class="navbar-end">
       <div class="navbar-item">
+        <button id="btn-settings" class="button is-dark is-small mr-2" title="Settings">⚙</button>
         <button id="btn-add-server" class="button is-primary is-small">
           <span>+ Add Connection</span>
         </button>
@@ -65,7 +66,7 @@
   </div>
 </section>
 
-<!-- ── Add Server Modal ───────────────────────────────────────── -->
+<!-- ── Add / Edit Connection Modal ────────────────────────────── -->
 <div id="modal-add" class="modal">
   <div class="modal-background" id="modal-bg"></div>
   <div class="modal-card" style="max-width: 540px; width: 90vw;">
@@ -98,7 +99,7 @@
         </div>
       </div>
 
-      <!-- Step 2a: Filesystem config -->
+      <!-- Step 2a: Filesystem / ObsidianFilesystem config -->
       <div id="step-2a" style="display:none;">
         <div class="field">
           <label class="label is-small">Connection Name</label>
@@ -114,23 +115,11 @@
           </div>
         </div>
         <div class="field">
-          <label class="label is-small">Port</label>
-          <div class="control">
-            <input id="fs-port" class="input is-small" type="number" min="50000" max="59999" placeholder="50000">
-          </div>
-          <p id="fs-port-warning" class="help is-warning port-warning"></p>
-        </div>
-        <div class="field">
           <label class="label is-small">MCP Path</label>
           <div class="control">
             <input id="fs-mcp-path" class="input is-small" type="text" placeholder="/mcp">
           </div>
-          <p class="help has-text-grey">URL path for the MCP endpoint. Leave blank to auto-generate from name.</p>
-        </div>
-        <div class="field">
-          <label class="checkbox is-small">
-            <input type="checkbox" id="fs-use-https"> Use HTTPS (self-signed)
-          </label>
+          <p class="help has-text-grey">URL path for this connection. Leave blank to auto-generate from name.</p>
         </div>
       </div>
 
@@ -156,10 +145,11 @@
           </div>
         </div>
         <div class="field">
-          <label class="label is-small" id="rp-url-label">Base URL</label>
+          <label class="label is-small" id="rp-url-label">Upstream MCP URL</label>
           <div class="control">
-            <input id="rp-url" class="input is-small" type="text" placeholder="https://your-outline.com">
+            <input id="rp-url" class="input is-small" type="text" placeholder="https://your-server.com/mcp">
           </div>
+          <p class="help has-text-grey">Full URL of the remote MCP endpoint (including path).</p>
         </div>
 
         <!-- Auth method toggle -->
@@ -221,22 +211,11 @@
         </div>
 
         <div class="field">
-          <label class="label is-small">Port</label>
-          <div class="control">
-            <input id="rp-port" class="input is-small" type="number" min="50000" max="59999" placeholder="50001">
-          </div>
-          <p id="rp-port-warning" class="help is-warning port-warning"></p>
-        </div>
-        <div class="field">
           <label class="label is-small">MCP Path</label>
           <div class="control">
             <input id="rp-mcp-path" class="input is-small" type="text" placeholder="/mcp">
           </div>
-        </div>
-        <div class="field">
-          <label class="checkbox is-small">
-            <input type="checkbox" id="rp-use-https"> Use HTTPS (self-signed)
-          </label>
+          <p class="help has-text-grey">Local path for this connection (e.g. /mcp/outline). Leave blank to auto-generate.</p>
         </div>
       </div>
 
@@ -245,6 +224,31 @@
       <button id="btn-back" class="button is-light is-small" style="display:none;">← Back</button>
       <button id="btn-next" class="button is-primary is-small" disabled>Next →</button>
       <button id="btn-create" class="button is-success is-small" style="display:none;">Create Connection</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ── Settings Modal ──────────────────────────────────────────── -->
+<div id="modal-settings" class="modal">
+  <div class="modal-background" id="settings-bg"></div>
+  <div class="modal-card" style="max-width: 380px; width: 90vw;">
+    <header class="modal-card-head">
+      <p class="modal-card-title">Settings</p>
+      <button class="delete" id="settings-close" aria-label="close"></button>
+    </header>
+    <section class="modal-card-body">
+      <div class="field">
+        <label class="label is-small">Global MCP Port</label>
+        <div class="control is-flex" style="gap:8px;">
+          <input id="settings-port" class="input is-small" type="number" min="1024" max="65535" placeholder="51552" style="max-width:120px;">
+          <button id="btn-save-port" class="button is-primary is-small">Save</button>
+        </div>
+        <p class="help has-text-grey">All connections share this port, differentiated by path. Changing the port restarts the server.</p>
+        <p id="settings-port-status" class="help" style="display:none;"></p>
+      </div>
+    </section>
+    <footer class="modal-card-foot is-justify-content-flex-end">
+      <button id="btn-settings-close2" class="button is-light is-small">Close</button>
     </footer>
   </div>
 </div>
@@ -261,6 +265,7 @@
         <span class="status-dot stopped"></span>
         <span class="connection-name"></span>
         <span class="tag type-badge is-small"></span>
+        <button class="edit-btn icon-btn" title="Edit">✏</button>
         <button class="delete-btn icon-btn" title="Delete">✕</button>
       </div>
 
@@ -269,10 +274,6 @@
         <div class="card-row">
           <span class="row-label">Endpoint</span>
           <span class="url-display mono"></span>
-        </div>
-        <div class="card-row">
-          <span class="row-label">Port</span>
-          <span class="port-display mono"></span>
         </div>
         <div class="card-row root-path-row">
           <span class="row-label">Root</span>

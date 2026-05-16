@@ -2,28 +2,26 @@ mod audit;
 mod commands;
 mod error;
 mod filesystem_server;
+mod global_server;
 mod models;
 mod oauth;
 mod obsidian_fs_server;
-mod port_manager;
 mod proxy_server;
 mod security;
-mod server_manager;
 mod store;
-mod tls;
 
 use std::sync::Mutex;
 
 use audit::{AuditLog, AuditState};
 use commands::*;
+use global_server::GlobalServer;
 use models::ConnectionStatus;
-use server_manager::ServerManager;
 use store::{AppStore, StoreState};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
+use tokio::sync::Mutex as AsyncMutex;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing (only in debug; release uses Tauri's logger)
     #[cfg(debug_assertions)]
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -40,22 +38,37 @@ pub fn run() {
             // Must install crypto provider before any TLS operation
             let _ = rustls::crypto::ring::default_provider().install_default();
 
-            // Set up audit log in the app log directory
+            // Audit log
             let log_dir = app.path().app_log_dir()?;
             std::fs::create_dir_all(&log_dir)?;
             let audit_path = log_dir.join("audit.ndjson");
             app.manage(AuditState(AuditLog::new(audit_path)));
 
+            // Store
             let store = AppStore::new(app.handle().clone());
             app.manage(StoreState(Mutex::new(store)));
-            app.manage(ServerManager::new());
 
+            // Global server — read saved port, create (not started yet)
+            let global_port = {
+                let s = app.state::<StoreState>();
+                let s = s.0.lock().unwrap();
+                s.load_port_config().unwrap_or_default().port
+            };
+            app.manage(AsyncMutex::new(GlobalServer::new(global_port)));
+
+            // Async startup tasks
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                // Start global MCP server
+                if let Some(gs_state) = handle.try_state::<AsyncMutex<GlobalServer>>() {
+                    if let Err(e) = gs_state.lock().await.start().await {
+                        tracing::error!("failed to start global server: {e}");
+                    }
+                }
+
+                // Reset all connection statuses to Stopped
                 if let Some(state) = handle.try_state::<StoreState>() {
                     let s = state.0.lock().unwrap();
-
-                    // Reset all connection statuses to Stopped (server not running after restart)
                     if let Ok(mut conns) = s.load_connections() {
                         let dirty = conns.iter().any(|c| c.status != ConnectionStatus::Stopped);
                         if dirty {
@@ -63,20 +76,6 @@ pub fn run() {
                                 c.status = ConnectionStatus::Stopped;
                             }
                             let _ = s.save_connections(&conns);
-                        }
-                    }
-
-                    // Validate port assignments; emit events for any that were reassigned
-                    if let Ok(mut cfg) = s.load_port_config() {
-                        let reassigned = port_manager::validate_and_reassign(&mut cfg);
-                        if !reassigned.is_empty() {
-                            let _ = s.save_port_config(&cfg);
-                            for (id, old, new) in reassigned {
-                                let _ = handle.emit(
-                                    "port-reassigned",
-                                    serde_json::json!({"id": id, "old_port": old, "new_port": new}),
-                                );
-                            }
                         }
                     }
                 }
@@ -87,14 +86,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_connections,
             create_connection,
+            update_connection,
             delete_connection,
-            suggest_port,
             start_server,
             stop_server,
             get_server_status,
+            get_global_port,
+            set_global_port,
+            start_oauth_flow,
             pick_folder,
             get_audit_log,
-            start_oauth_flow,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

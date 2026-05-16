@@ -162,7 +162,21 @@ html, body {
   flex-shrink: 0;
   line-height: 1;
 }
-.icon-btn:hover { background: var(--fire-ash); color: var(--fire-red); }
+.icon-btn:hover        { background: var(--fire-ash); color: var(--fire-red); }
+.icon-btn.edit-btn:hover { background: var(--fire-ash); color: #3e8ed0; }
+
+/* ── Settings button ──────────────────────────────────────────────────────── */
+#btn-settings {
+  background-color: transparent;
+  border: 1px solid var(--fire-smoke);
+  color: var(--fire-grey);
+  font-size: 0.95rem;
+  padding: 0 10px;
+}
+#btn-settings:hover {
+  border-color: var(--fire-yellow);
+  color: var(--fire-yellow);
+}
 
 .card-body {
   padding: 8px 14px 10px;

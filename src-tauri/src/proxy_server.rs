@@ -105,7 +105,7 @@ async fn handle_rpc(
     // Emit audit
     {
         let auth = state.auth.read().await;
-        let target_url = format!("{}/mcp", auth.base_url.trim_end_matches('/'));
+        let target_url = auth.base_url.trim_end_matches('/').to_string();
         drop(auth);
         if let Some(audit_state) = state.app.try_state::<AuditState>() {
             let entry = AuditEntry {
@@ -135,7 +135,7 @@ async fn do_proxy_request(
 ) -> (AuditResult, Response) {
     let (target_url, bearer) = {
         let auth = state.auth.read().await;
-        let url = format!("{}/mcp", auth.base_url.trim_end_matches('/'));
+        let url = auth.base_url.trim_end_matches('/').to_string();
         let bearer = pick_bearer(&auth);
         (url, bearer)
     };
