@@ -15,5 +15,6 @@ export const getGlobalPort     = ()         => invoke("get_global_port",    {});
 export const setGlobalPort     = (port)     => invoke("set_global_port",    { port });
 export const pickFolder        = ()         => invoke("pick_folder");
 export const getAuditLog       = (limit)    => invoke("get_audit_log",      { limit: limit ?? 50 });
-export const startOAuthFlow    = (id)       => invoke("start_oauth_flow",   { connectionId: id });
-export const getTlsStatus      = ()         => invoke("get_tls_status",      {});
+export const startOAuthFlow      = (id)    => invoke("start_oauth_flow",      { connectionId: id });
+export const getOAuthCredentials = ()      => invoke("get_oauth_credentials", {});
+export const rotateOAuthSecret   = ()      => invoke("rotate_oauth_secret",   {});

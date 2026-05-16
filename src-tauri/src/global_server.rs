@@ -1,4 +1,4 @@
-//! Single-port global HTTP/HTTPS server.
+//! Single-port global HTTP server.
 //!
 //! All MCP connections share one axum server on a configurable port (default 51552).
 //! Each connection registers its Router keyed by `mcp_path`; a catch-all fallback
@@ -13,7 +13,6 @@ use axum::{
     response::{IntoResponse, Response},
     Router,
 };
-use hyper_util::rt::TokioIo;
 use tokio::sync::{oneshot, RwLock};
 use tower::ServiceExt;
 
@@ -33,109 +32,68 @@ pub struct GlobalServer {
     shutdown_tx: Option<oneshot::Sender<()>>,
     handle: Option<tauri::async_runtime::JoinHandle<()>>,
     port: u16,
-    tls_config: Option<Arc<rustls::ServerConfig>>,
+    auth_state: Option<Arc<crate::incoming_auth::IncomingAuthState>>,
 }
 
 impl GlobalServer {
-    #[allow(dead_code)]
     pub fn new(port: u16) -> Self {
         Self {
             dispatch: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             handle: None,
             port,
-            tls_config: None,
+            auth_state: None,
         }
     }
 
-    pub fn new_with_tls(port: u16, tls: Option<Arc<rustls::ServerConfig>>) -> Self {
-        Self {
-            dispatch: Arc::new(RwLock::new(HashMap::new())),
-            shutdown_tx: None,
-            handle: None,
-            port,
-            tls_config: tls,
-        }
+    pub fn set_auth(&mut self, auth: Arc<crate::incoming_auth::IncomingAuthState>) {
+        self.auth_state = Some(auth);
     }
 
-    /// Returns true if this server is configured for HTTPS.
-    pub fn is_https(&self) -> bool {
-        self.tls_config.is_some()
-    }
-
-    /// Bind and start listening. Uses stored TLS config if present.
+    /// Bind and start listening (plain HTTP).
     pub async fn start(&mut self) -> Result<(), AppError> {
-        self.start_with_tls(self.tls_config.clone()).await
-    }
-
-    /// Bind and start listening. Pass `Some(tls_config)` for HTTPS, `None` for HTTP.
-    pub async fn start_with_tls(
-        &mut self,
-        tls_config: Option<Arc<rustls::ServerConfig>>,
-    ) -> Result<(), AppError> {
         if self.shutdown_tx.is_some() {
             return Ok(());
         }
-
-        // Store the config so restart_on_port can re-use it.
-        self.tls_config = tls_config.clone();
 
         let dispatch = self.dispatch.clone();
         let addr = format!("127.0.0.1:{}", self.port);
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
             .map_err(AppError::Io)?;
+        tracing::info!("global MCP server listening on http://127.0.0.1:{}", self.port);
 
         let (tx, rx) = oneshot::channel::<()>();
-        let scheme = if tls_config.is_some() { "https" } else { "http" };
-        tracing::info!(
-            "global MCP server listening on {}://127.0.0.1:{}",
-            scheme,
-            self.port
-        );
 
-        let handle = if let Some(cfg) = tls_config {
-            let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
-            tauri::async_runtime::spawn(async move {
-                tokio::pin!(rx);
-                loop {
-                    tokio::select! {
-                        _ = &mut rx => break,
-                        result = listener.accept() => {
-                            let Ok((stream, _)) = result else { continue };
-                            let acceptor = acceptor.clone();
-                            let dispatch = dispatch.clone();
-                            tokio::spawn(async move {
-                                let Ok(tls_stream) = acceptor.accept(stream).await else { return };
-                                let io = TokioIo::new(tls_stream);
-                                let svc = hyper::service::service_fn(move |req: Request<hyper::body::Incoming>| {
-                                    let dispatch = dispatch.clone();
-                                    async move {
-                                        Ok::<Response<Body>, std::convert::Infallible>(
-                                            dispatch_handler_inner(dispatch, req).await
-                                        )
-                                    }
-                                });
-                                let _ = hyper::server::conn::http1::Builder::new()
-                                    .serve_connection(io, svc)
-                                    .await;
-                            });
-                        }
-                    }
-                }
-            })
-        } else {
-            // Plain HTTP via axum
-            let app = Router::new()
+        let app = if let Some(auth) = self.auth_state.clone() {
+            use axum::{middleware, routing::post};
+            use crate::incoming_auth::token_endpoint;
+
+            let token_route = Router::new()
+                .route("/oauth/token", post(token_endpoint))
+                .with_state(auth.clone());
+
+            let mcp_routes = Router::new()
                 .fallback(dispatch_handler)
-                .with_state(dispatch);
-            tauri::async_runtime::spawn(async move {
-                axum::serve(listener, app)
-                    .with_graceful_shutdown(async { let _ = rx.await; })
-                    .await
-                    .ok();
-            })
+                .with_state(dispatch)
+                .layer(middleware::from_fn_with_state(
+                    auth.clone(),
+                    auth_middleware,
+                ));
+
+            token_route.merge(mcp_routes)
+        } else {
+            Router::new()
+                .fallback(dispatch_handler)
+                .with_state(dispatch)
         };
+
+        let handle = tauri::async_runtime::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async { let _ = rx.await; })
+                .await
+                .ok();
+        });
 
         self.shutdown_tx = Some(tx);
         self.handle = Some(handle);
@@ -152,12 +110,11 @@ impl GlobalServer {
         }
     }
 
-    /// Stop, change port, restart. Registered routes and TLS config are preserved.
+    /// Stop, change port, restart.
     pub async fn restart_on_port(&mut self, new_port: u16) -> Result<(), AppError> {
-        let tls = self.tls_config.clone();
         self.stop().await;
         self.port = new_port;
-        self.start_with_tls(tls).await
+        self.start().await
     }
 
     #[allow(dead_code)]
@@ -186,7 +143,20 @@ impl GlobalServer {
     }
 }
 
-// ── Catch-all dispatcher (axum HTTP path) ─────────────────────────────────────
+// ── Auth middleware ────────────────────────────────────────────────────────────
+
+async fn auth_middleware(
+    State(auth): State<Arc<crate::incoming_auth::IncomingAuthState>>,
+    req: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    if let Some(err) = crate::incoming_auth::check_bearer(&auth, req.headers()).await {
+        return err;
+    }
+    next.run(req).await
+}
+
+// ── Catch-all dispatcher ──────────────────────────────────────────────────────
 
 async fn dispatch_handler(
     State(dispatch): State<DispatchTable>,
@@ -195,7 +165,6 @@ async fn dispatch_handler(
     route_request(dispatch, req).await
 }
 
-/// Shared dispatch logic for a `Request<Body>` — called from both HTTP and HTTPS paths.
 async fn route_request(dispatch: DispatchTable, req: Request<Body>) -> Response {
     let path = req.uri().path().to_string();
     let router = dispatch.read().await.get(&path).cloned();
@@ -209,15 +178,4 @@ async fn route_request(dispatch: DispatchTable, req: Request<Body>) -> Response 
             StatusCode::NOT_FOUND.into_response()
         }
     }
-}
-
-/// Entry point for TLS path — converts hyper::body::Incoming to axum Body first.
-async fn dispatch_handler_inner(
-    dispatch: DispatchTable,
-    req: Request<hyper::body::Incoming>,
-) -> Response {
-    let (parts, incoming) = req.into_parts();
-    let body = Body::new(incoming);
-    let req = Request::from_parts(parts, body);
-    route_request(dispatch, req).await
 }

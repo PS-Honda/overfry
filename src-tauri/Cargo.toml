@@ -43,10 +43,6 @@ tower-http         = { workspace = true }
 gray_matter        = { workspace = true }
 pulldown-cmark     = { workspace = true }
 serde_yaml         = { workspace = true }
-rcgen              = { workspace = true }
-tokio-rustls       = { workspace = true }
-rustls-pemfile     = { workspace = true }
-rustls             = { version = "0.23", features = ["ring"] }
 hyper              = { workspace = true }
 hyper-util         = { workspace = true }
 rand               = { workspace = true }

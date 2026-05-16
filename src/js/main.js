@@ -26,6 +26,6 @@ function wireTauriEvents() {
   });
 
   listen("tunnel-status-changed", ({ payload }) => {
-    handleTunnelChanged(payload?.url ?? null);
+    handleTunnelChanged(payload ?? { url: null, status: "Unavailable" });
   });
 }

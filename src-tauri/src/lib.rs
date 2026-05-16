@@ -4,13 +4,13 @@ mod cors;
 mod error;
 mod filesystem_server;
 mod global_server;
+mod incoming_auth;
 mod models;
 mod oauth;
 mod obsidian_fs_server;
 mod proxy_server;
 mod security;
 mod store;
-mod tls;
 mod tunnel;
 
 use std::sync::{Arc, Mutex};
@@ -18,27 +18,12 @@ use std::sync::{Arc, Mutex};
 use audit::{AuditLog, AuditState};
 use commands::*;
 use global_server::GlobalServer;
+use incoming_auth::IncomingAuthStateHandle;
 use models::ConnectionStatus;
 use store::{AppStore, StoreState};
 use tauri::Manager;
 use tokio::sync::Mutex as AsyncMutex;
 use tunnel::{TunnelManager, TunnelState};
-
-// ── TLS setup helper ──────────────────────────────────────────────────────────
-
-fn setup_tls(data_dir: &std::path::Path) -> Result<rustls::ServerConfig, crate::error::AppError> {
-    let (ca_cert, ca_key) = crate::tls::generate_ca()?;
-    let (leaf_cert_pem, leaf_key_pem) = crate::tls::generate_leaf(&ca_cert, &ca_key)?;
-    crate::tls::persist_certs(
-        data_dir,
-        &ca_cert.pem(),
-        &ca_key.serialize_pem(),
-        &leaf_cert_pem,
-        &leaf_key_pem,
-    )?;
-    crate::tls::install_ca(data_dir)?;
-    crate::tls::make_tls_config(&leaf_cert_pem, &leaf_key_pem)
-}
 
 // ── App entry point ───────────────────────────────────────────────────────────
 
@@ -57,9 +42,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            // Must install crypto provider before any TLS operation
-            let _ = rustls::crypto::ring::default_provider().install_default();
-
             // Audit log
             let log_dir = app.path().app_log_dir()?;
             std::fs::create_dir_all(&log_dir)?;
@@ -77,73 +59,24 @@ pub fn run() {
                 s.load_port_config().unwrap_or_default().port
             };
 
-            // TLS setup — done synchronously in setup() so it can show a dialog.
-            let tls_config: Option<Arc<rustls::ServerConfig>> = {
-                let data_dir = app.path().app_data_dir()?;
-
-                if let Some(certs) = crate::tls::load_certs(&data_dir) {
-                    // Existing certs found — load them.
-                    match crate::tls::make_tls_config(&certs.leaf_cert_pem, &certs.leaf_key_pem) {
-                        Ok(cfg) => {
-                            tracing::info!("loaded existing TLS certs from disk");
-                            Some(Arc::new(cfg))
-                        }
-                        Err(e) => {
-                            tracing::warn!("failed to load stored TLS certs: {e} — falling back to HTTP");
-                            None
-                        }
-                    }
-                } else {
-                    // No certs — ask for consent.
-                    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
-                    let approved = app
-                        .dialog()
-                        .message(
-                            "Overfry will generate a private Certificate Authority (CA) and \
-                            install it into your system's certificate trust store.\n\n\
-                            This allows Claude.ai and other MCP clients to connect securely \
-                            over HTTPS.\n\n\
-                            \u{2022} The CA is generated locally on your machine\n\
-                            \u{2022} It only signs certificates for 127.0.0.1 and localhost\n\
-                            \u{2022} It is never shared with any external server\n\n\
-                            You may be prompted by your operating system to confirm this action.\n\n\
-                            Proceed?",
-                        )
-                        .title("Enable Secure HTTPS Connection")
-                        .buttons(MessageDialogButtons::OkCancel)
-                        .blocking_show();
-
-                    if approved {
-                        match setup_tls(&data_dir) {
-                            Ok(cfg) => {
-                                tracing::info!("TLS setup complete — HTTPS enabled");
-                                Some(Arc::new(cfg))
-                            }
-                            Err(e) => {
-                                tracing::error!("TLS setup failed: {e} — falling back to HTTP");
-                                let _ = app
-                                    .dialog()
-                                    .message(format!(
-                                        "HTTPS setup failed: {e}\n\n\
-                                        The app will use HTTP instead. \
-                                        Claude.ai connections may not work."
-                                    ))
-                                    .title("HTTPS Setup Failed")
-                                    .blocking_show();
-                                None
-                            }
-                        }
-                    } else {
-                        tracing::info!("user declined TLS setup — using HTTP");
-                        None
-                    }
-                }
+            // Load or generate OAuth credentials for incoming tunnel auth
+            let oauth_creds = {
+                let s = app.state::<StoreState>();
+                let s = s.0.lock().unwrap();
+                let creds = s.load_oauth_credentials().unwrap_or_else(|_| {
+                    crate::store::OAuthCredentials::generate()
+                });
+                let _ = s.save_oauth_credentials(&creds);
+                creds
             };
 
-            app.manage(AsyncMutex::new(GlobalServer::new_with_tls(
-                global_port,
-                tls_config,
-            )));
+            let auth_state = Arc::new(incoming_auth::IncomingAuthState::new(oauth_creds));
+            app.manage(IncomingAuthStateHandle(auth_state.clone()));
+
+            // Build GlobalServer with auth
+            let mut gs = GlobalServer::new(global_port);
+            gs.set_auth(auth_state);
+            app.manage(AsyncMutex::new(gs));
 
             app.manage(TunnelState(Mutex::new(TunnelManager::new())));
 
@@ -156,6 +89,9 @@ pub fn run() {
                         tracing::error!("failed to start global server: {e}");
                     }
                 }
+
+                // Auto-start Cloudflare tunnel
+                tunnel::tunnel_start(&handle, global_port);
 
                 // Reset all connection statuses to Stopped
                 if let Some(state) = handle.try_state::<StoreState>() {
@@ -187,7 +123,8 @@ pub fn run() {
             start_oauth_flow,
             pick_folder,
             get_audit_log,
-            get_tls_status,
+            get_oauth_credentials,
+            rotate_oauth_secret,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

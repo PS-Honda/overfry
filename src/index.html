@@ -19,6 +19,12 @@
   </div>
   <div class="navbar-menu is-active">
     <div class="navbar-end">
+      <div class="navbar-item" id="tunnel-status-item">
+        <span id="tunnel-badge" class="tag is-small is-warning mr-2"
+              title="Cloudflare Tunnel" style="cursor:default;">
+          ☁ <span id="tunnel-label">connecting…</span>
+        </span>
+      </div>
       <div class="navbar-item">
         <button id="btn-settings" class="button is-dark is-small mr-2" title="Settings">⚙</button>
         <button id="btn-add-server" class="button is-primary is-small">
@@ -246,9 +252,44 @@
         <p class="help has-text-grey">All connections share this port, differentiated by path. Changing the port restarts the server.</p>
         <p id="settings-port-status" class="help" style="display:none;"></p>
       </div>
-      <div class="field mt-3">
-        <label class="label is-small">HTTPS</label>
-        <p id="settings-tls-status" class="is-size-7 has-text-grey"></p>
+      <!-- OAuth Credentials section -->
+      <div class="field mt-4">
+        <label class="label is-small">OAuth Credentials <span class="tag is-info is-light is-small ml-1">for MCP clients</span></label>
+        <div class="control mb-2">
+          <label class="label is-small has-text-grey">Token Endpoint</label>
+          <div class="field has-addons">
+            <div class="control is-expanded">
+              <input id="oauth-token-endpoint" class="input is-small" type="text" readonly>
+            </div>
+            <div class="control">
+              <button id="btn-copy-token-endpoint" class="button is-small is-light">Copy</button>
+            </div>
+          </div>
+        </div>
+        <div class="control mb-2">
+          <label class="label is-small has-text-grey">Client ID</label>
+          <div class="field has-addons">
+            <div class="control is-expanded">
+              <input id="oauth-client-id" class="input is-small" type="text" readonly>
+            </div>
+            <div class="control">
+              <button id="btn-copy-client-id" class="button is-small is-light">Copy</button>
+            </div>
+          </div>
+        </div>
+        <div class="control mb-2">
+          <label class="label is-small has-text-grey">Client Secret</label>
+          <div class="field has-addons">
+            <div class="control is-expanded">
+              <input id="oauth-client-secret" class="input is-small" type="text" readonly style="font-size:0.65rem;">
+            </div>
+            <div class="control">
+              <button id="btn-copy-client-secret" class="button is-small is-light">Copy</button>
+            </div>
+          </div>
+        </div>
+        <button id="btn-rotate-secret" class="button is-small is-warning is-light">🔄 Rotate Secret</button>
+        <p id="oauth-rotate-status" class="help" style="display:none;"></p>
       </div>
     </section>
     <footer class="modal-card-foot is-justify-content-flex-end">
@@ -275,22 +316,21 @@
 
       <!-- Body -->
       <div class="card-body">
-        <div class="card-row">
-          <span class="row-label">Endpoint</span>
-          <span class="url-display mono"></span>
-        </div>
         <div class="card-row root-path-row">
-          <span class="row-label">Root</span>
+          <span class="row-label">Destination</span>
           <span class="root-path-display mono"></span>
         </div>
-        <!-- Public URL (shown when Cloudflare tunnel is active) -->
+        <div class="card-row">
+          <span class="row-label">Local</span>
+          <span class="url-display mono"></span>
+        </div>
         <div class="card-row public-url-row" style="display:none;">
           <span class="row-label">Public</span>
           <span class="public-url-display mono" style="font-size:0.65rem;word-break:break-all;"></span>
         </div>
-        <!-- Copy URL sits in body bottom -->
+        <!-- Copy buttons -->
         <div class="card-row" style="margin-top:6px;display:flex;gap:4px;">
-          <button class="copy-url-btn button is-info is-small is-light" style="flex:1;font-size:0.7rem;">Copy URL</button>
+          <button class="copy-url-btn button is-info is-small is-light" style="flex:1;font-size:0.7rem;">Copy Local URL</button>
           <button class="copy-public-url-btn button is-warning is-small is-light" style="flex:1;font-size:0.7rem;display:none;">Copy Public URL</button>
         </div>
         <!-- Authorize button — only shown for unauthed OAuth connections -->

@@ -1,4 +1,4 @@
-import { listConnections, startServer, stopServer, deleteConnection, startOAuthFlow, getGlobalPort, setGlobalPort, getTlsStatus } from "./api.js";
+import { listConnections, startServer, stopServer, deleteConnection, startOAuthFlow, getGlobalPort, setGlobalPort, getOAuthCredentials, rotateOAuthSecret } from "./api.js";
 
 const dashboard       = document.getElementById("dashboard");
 const emptyState      = document.getElementById("empty-state");
@@ -23,8 +23,6 @@ const STATUS_CLASSES = ["stopped", "running", "starting", "error"];
 
 // Current global port — starts at default, loaded async on init
 let globalPort = 51552;
-// Whether the server is running HTTPS
-let isHttps = false;
 // Public base URL from Cloudflare tunnel (null when tunnel is down)
 let tunnelBaseUrl = null;
 
@@ -41,8 +39,7 @@ function refreshCount() {
 }
 
 function buildUrl(conn) {
-  const scheme = isHttps ? "https" : "http";
-  return `${scheme}://127.0.0.1:${globalPort}${conn.mcp_path || "/mcp"}`;
+  return `http://127.0.0.1:${globalPort}${conn.mcp_path || "/mcp"}`;
 }
 
 function buildPublicUrl(conn) {
@@ -217,10 +214,6 @@ export async function loadDashboard() {
   } catch { /* use default */ }
 
   try {
-    isHttps = await getTlsStatus();
-  } catch { /* use default (false = HTTP) */ }
-
-  try {
     const conns = await listConnections();
     conns.forEach(renderCard);
   } catch (e) {
@@ -230,17 +223,21 @@ export async function loadDashboard() {
 
 // ── Settings modal ─────────────────────────────────────────────
 
-function openSettings() {
+async function openSettings() {
   settingsPort.value = globalPort;
   settingsStatus.style.display = "none";
   settingsModal.classList.add("is-active");
-  const tlsEl = document.getElementById("settings-tls-status");
-  if (tlsEl) {
-    tlsEl.textContent = isHttps
-      ? "Active — serving HTTPS on port " + globalPort
-      : "Disabled — using HTTP only";
-    tlsEl.className = isHttps ? "is-size-7 has-text-success" : "is-size-7 has-text-warning";
-  }
+
+  // Load OAuth credentials
+  try {
+    const creds = await getOAuthCredentials();
+    const epEl  = document.getElementById("oauth-token-endpoint");
+    const idEl  = document.getElementById("oauth-client-id");
+    const secEl = document.getElementById("oauth-client-secret");
+    if (epEl)  epEl.value  = creds.token_endpoint;
+    if (idEl)  idEl.value  = creds.client_id;
+    if (secEl) secEl.value = creds.client_secret;
+  } catch { /* ignore */ }
 }
 
 function closeSettings() {
@@ -282,7 +279,74 @@ export function handlePortChanged(port) {
   updateAllUrls();
 }
 
-export function handleTunnelChanged(url) {
+export function handleTunnelChanged({ url, status }) {
   tunnelBaseUrl = url ?? null;
   updateAllPublicUrls();
+  updateTunnelBadge(status, url);
 }
+
+function updateTunnelBadge(status, url) {
+  const item  = document.getElementById("tunnel-status-item");
+  const badge = document.getElementById("tunnel-badge");
+  const label = document.getElementById("tunnel-label");
+  if (!item || !badge || !label) return;
+
+  badge.className = "tag is-small mr-2";
+  badge.onclick = null;
+
+  if (status === "Active" && url) {
+    badge.classList.add("is-success");
+    label.textContent = "tunnel active";
+    badge.title = `Cloudflare Tunnel — click to copy: ${url}`;
+    badge.style.cursor = "pointer";
+    badge.onclick = () => navigator.clipboard.writeText(url).catch(() => {});
+  } else if (status === "Unavailable") {
+    badge.classList.add("is-light");
+    badge.classList.add("has-text-grey");
+    label.textContent = "tunnel unavailable";
+    badge.title = "Cloudflare Tunnel — binary not found or spawn failed";
+    badge.style.cursor = "default";
+  } else {
+    // Connecting
+    badge.classList.add("is-warning");
+    label.textContent = "connecting…";
+    badge.title = "Cloudflare Tunnel — establishing connection…";
+    badge.style.cursor = "default";
+  }
+}
+
+// ── OAuth settings wiring ──────────────────────────────────────
+
+function wireOAuthSettings() {
+  function makeCopy(btnId, inputId) {
+    document.getElementById(btnId)?.addEventListener("click", () => {
+      const val = document.getElementById(inputId)?.value;
+      if (val) navigator.clipboard.writeText(val).catch(() => {});
+    });
+  }
+  makeCopy("btn-copy-token-endpoint", "oauth-token-endpoint");
+  makeCopy("btn-copy-client-id",      "oauth-client-id");
+  makeCopy("btn-copy-client-secret",  "oauth-client-secret");
+
+  document.getElementById("btn-rotate-secret")?.addEventListener("click", async () => {
+    const statusEl = document.getElementById("oauth-rotate-status");
+    try {
+      const creds = await rotateOAuthSecret();
+      document.getElementById("oauth-client-id").value    = creds.client_id;
+      document.getElementById("oauth-client-secret").value = creds.client_secret;
+      if (statusEl) {
+        statusEl.textContent   = "Secret rotated. All existing tokens invalidated.";
+        statusEl.className     = "help is-success";
+        statusEl.style.display = "";
+      }
+    } catch (e) {
+      if (statusEl) {
+        statusEl.textContent   = `Failed: ${e}`;
+        statusEl.className     = "help is-danger";
+        statusEl.style.display = "";
+      }
+    }
+  });
+}
+
+wireOAuthSettings();

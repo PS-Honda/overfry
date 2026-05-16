@@ -6,9 +6,28 @@ use tauri_plugin_store::{Store, StoreExt};
 
 use crate::{error::AppError, models::{Connection, PortConfig}};
 
-const KEY_CONNECTIONS: &str = "connections";
-const KEY_PORT_CONFIG:  &str = "port_config";
-const STORE_FILE:       &str = "overfry-store.json";
+const KEY_CONNECTIONS:       &str = "connections";
+const KEY_PORT_CONFIG:       &str = "port_config";
+const KEY_OAUTH_CREDENTIALS: &str = "oauth_credentials";
+const STORE_FILE:            &str = "overfry-store.json";
+
+// ── OAuthCredentials ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OAuthCredentials {
+    pub client_id:     String,
+    pub client_secret: String,
+}
+
+impl OAuthCredentials {
+    pub fn generate() -> Self {
+        use rand::Rng;
+        let client_id     = uuid::Uuid::new_v4().to_string();
+        let secret_bytes: [u8; 32] = rand::thread_rng().gen();
+        let client_secret = secret_bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        Self { client_id, client_secret }
+    }
+}
 
 pub struct AppStore {
     app: AppHandle,
@@ -56,6 +75,21 @@ impl AppStore {
         let store = self.store()?;
         let val = serde_json::to_value(cfg).map_err(|e| AppError::Other(e.to_string()))?;
         store.set(KEY_PORT_CONFIG, val);
+        store.save().map_err(|e| AppError::Store(e.to_string()))
+    }
+
+    pub fn load_oauth_credentials(&self) -> Result<OAuthCredentials, AppError> {
+        let store = self.store()?;
+        if let Some(v) = store.get(KEY_OAUTH_CREDENTIALS) {
+            return serde_json::from_value(v.clone()).map_err(|e| AppError::Other(e.to_string()));
+        }
+        Ok(OAuthCredentials::generate())
+    }
+
+    pub fn save_oauth_credentials(&self, creds: &OAuthCredentials) -> Result<(), AppError> {
+        let store = self.store()?;
+        let val = serde_json::to_value(creds).map_err(|e| AppError::Other(e.to_string()))?;
+        store.set(KEY_OAUTH_CREDENTIALS, val);
         store.save().map_err(|e| AppError::Store(e.to_string()))
     }
 }

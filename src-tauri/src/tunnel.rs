@@ -7,14 +7,13 @@ use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 // ── State ─────────────────────────────────────────────────────────────────────
 
 pub struct TunnelManager {
-    child:     Option<tauri_plugin_shell::process::CommandChild>,
-    pub url:   Option<String>,
-    ref_count: u32,
+    child: Option<tauri_plugin_shell::process::CommandChild>,
+    pub url: Option<String>,
 }
 
 impl TunnelManager {
     pub fn new() -> Self {
-        Self { child: None, url: None, ref_count: 0 }
+        Self { child: None, url: None }
     }
 }
 
@@ -22,65 +21,24 @@ pub struct TunnelState(pub Mutex<TunnelManager>);
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Increment ref-count.  On the first caller, spawns cloudflared in the
-/// background; later callers re-emit the existing URL so the new card gets it.
-/// Fire-and-forget — does not block `start_server`.
-pub fn tunnel_acquire(app: &AppHandle, port: u16) {
-    let Some(state) = app.try_state::<TunnelState>() else { return };
+/// Start the Cloudflare tunnel. Called once on app launch.
+/// Emits `tunnel-status-changed { status: "Connecting" }` immediately,
+/// then `{ url, status: "Active" }` when URL is found,
+/// or `{ status: "Unavailable" }` if spawn fails.
+pub fn tunnel_start(app: &AppHandle, port: u16) {
+    // Emit Connecting immediately so navbar shows spinner
+    let _ = app.emit("tunnel-status-changed", json!({ "url": null, "status": "Connecting" }));
 
-    let maybe_url: Option<String> = {
-        let mut mgr = state.0.lock().unwrap();
-        mgr.ref_count += 1;
-
-        if mgr.ref_count == 1 {
-            // First connection — spawn cloudflared
-            let app_clone = app.clone();
-            tauri::async_runtime::spawn(async move {
-                spawn_cloudflared(app_clone, port).await;
-            });
-            None
-        } else {
-            // Tunnel already running — re-emit so the new card shows the URL
-            mgr.url.clone()
-        }
-    }; // MutexGuard dropped here
-
-    if let Some(url) = maybe_url {
-        let _ = app.emit("tunnel-status-changed", json!({ "url": url }));
-    }
-}
-
-/// Decrement ref-count; kills the cloudflared process when it reaches zero.
-pub fn tunnel_release(app: &AppHandle) {
-    let Some(state) = app.try_state::<TunnelState>() else { return };
-
-    let killed = {
-        let mut mgr = state.0.lock().unwrap();
-        if mgr.ref_count == 0 {
-            return;
-        }
-        mgr.ref_count -= 1;
-
-        if mgr.ref_count == 0 {
-            if let Some(child) = mgr.child.take() {
-                let _ = child.kill();
-            }
-            mgr.url = None;
-            true
-        } else {
-            false
-        }
-    }; // MutexGuard dropped here
-
-    if killed {
-        let _ = app.emit("tunnel-status-changed", json!({ "url": null }));
-    }
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        spawn_cloudflared(app_clone, port).await;
+    });
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
 async fn spawn_cloudflared(app: AppHandle, port: u16) {
-    let url_arg = format!("https://127.0.0.1:{port}");
+    let url_arg = format!("http://127.0.0.1:{port}");
 
     let spawn_result = app
         .shell()
@@ -92,17 +50,17 @@ async fn spawn_cloudflared(app: AppHandle, port: u16) {
         Ok(pair) => pair,
         Err(e) => {
             tracing::warn!("cloudflared: spawn failed: {e}");
+            let _ = app.emit("tunnel-status-changed", json!({ "url": null, "status": "Unavailable" }));
             return;
         }
     };
 
-    // Store child handle so tunnel_release can kill it
+    // Store child handle
     if let Some(state) = app.try_state::<TunnelState>() {
         state.0.lock().unwrap().child = Some(child);
     }
 
     // Read output until the public URL appears or the process exits
-    let mut found = false;
     while let Some(event) = rx.recv().await {
         let line = match &event {
             CommandEvent::Stdout(b) | CommandEvent::Stderr(b) => {
@@ -110,6 +68,7 @@ async fn spawn_cloudflared(app: AppHandle, port: u16) {
             }
             CommandEvent::Terminated(_) => {
                 tracing::info!("cloudflared: process terminated");
+                let _ = app.emit("tunnel-status-changed", json!({ "url": null, "status": "Unavailable" }));
                 break;
             }
             _ => continue,
@@ -117,20 +76,16 @@ async fn spawn_cloudflared(app: AppHandle, port: u16) {
 
         tracing::debug!("cloudflared: {}", line.trim_end());
 
-        if !found {
-            if let Some(url) = extract_tunnel_url(&line) {
-                if let Some(state) = app.try_state::<TunnelState>() {
-                    state.0.lock().unwrap().url = Some(url.clone());
-                }
-                let _ = app.emit("tunnel-status-changed", json!({ "url": url }));
-                found = true;
-                // Keep draining — don't break, so cloudflared's pipe stays open
+        if let Some(url) = extract_tunnel_url(&line) {
+            if let Some(state) = app.try_state::<TunnelState>() {
+                state.0.lock().unwrap().url = Some(url.clone());
             }
+            let _ = app.emit("tunnel-status-changed", json!({ "url": url, "status": "Active" }));
+            // Keep draining so cloudflared's pipe stays open
         }
     }
 }
 
-/// Extract `https://…trycloudflare.com` from a cloudflared output line.
 fn extract_tunnel_url(line: &str) -> Option<String> {
     let pos = line.find("https://")?;
     let rest = &line[pos..];

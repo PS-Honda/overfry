@@ -9,6 +9,7 @@ use crate::{
     error::AppError,
     filesystem_server,
     global_server::GlobalServer,
+    incoming_auth::IncomingAuthStateHandle,
     models::{
         AuditEntry, AuthConfig, AuthMethod, Connection, ConnectionStatus, ConnectionType,
         ConnectionView, CreateConnectionRequest, PortConfig,
@@ -17,7 +18,6 @@ use crate::{
     obsidian_fs_server,
     proxy_server,
     store::StoreState,
-    tunnel,
 };
 
 type CmdResult<T> = Result<T, String>;
@@ -310,13 +310,6 @@ pub async fn start_server(
 
     let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Running"}));
 
-    // Acquire (or reuse) Cloudflare tunnel so Claude.ai can reach this connection
-    let global_port = {
-        let s = store.0.lock().unwrap();
-        s.load_port_config().unwrap_or_default().port
-    };
-    tunnel::tunnel_acquire(&app, global_port);
-
     Ok(())
 }
 
@@ -350,9 +343,6 @@ pub async fn stop_server(
     }
 
     let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Stopped"}));
-
-    // Release tunnel ref-count; kills cloudflared when last connection stops
-    tunnel::tunnel_release(&app);
 
     Ok(())
 }
@@ -470,11 +460,39 @@ pub async fn pick_folder(app: AppHandle) -> CmdResult<Option<String>> {
     Ok(path.map(|p| p.to_string()))
 }
 
-// ── TLS status ────────────────────────────────────────────────────────────────
+// ── OAuth credentials (incoming tunnel auth) ───────────────────────────────────
 
 #[tauri::command]
-pub async fn get_tls_status(gs: State<'_, Mutex<GlobalServer>>) -> CmdResult<bool> {
-    Ok(gs.lock().await.is_https())
+pub async fn get_oauth_credentials(
+    _store:     State<'_, StoreState>,
+    gs:         State<'_, Mutex<GlobalServer>>,
+    auth_state: State<'_, IncomingAuthStateHandle>,
+) -> CmdResult<serde_json::Value> {
+    let port = gs.lock().await.port();
+    let creds = auth_state.0.credentials.read().await;
+    Ok(serde_json::json!({
+        "client_id":      creds.client_id,
+        "client_secret":  creds.client_secret,
+        "token_endpoint": format!("http://127.0.0.1:{port}/oauth/token"),
+    }))
+}
+
+#[tauri::command]
+pub async fn rotate_oauth_secret(
+    store:      State<'_, StoreState>,
+    auth_state: State<'_, IncomingAuthStateHandle>,
+) -> CmdResult<serde_json::Value> {
+    use crate::store::OAuthCredentials;
+    let new_creds = OAuthCredentials::generate();
+    {
+        let s = store.0.lock().unwrap();
+        s.save_oauth_credentials(&new_creds).map_err(|e| e.to_string())?;
+    }
+    auth_state.0.rotate_credentials(new_creds.clone()).await;
+    Ok(serde_json::json!({
+        "client_id":     new_creds.client_id,
+        "client_secret": new_creds.client_secret,
+    }))
 }
 
 // ── Audit log ─────────────────────────────────────────────────────────────────
