@@ -9,8 +9,9 @@ mod obsidian_fs_server;
 mod proxy_server;
 mod security;
 mod store;
+mod tls;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use audit::{AuditLog, AuditState};
 use commands::*;
@@ -19,6 +20,24 @@ use models::ConnectionStatus;
 use store::{AppStore, StoreState};
 use tauri::Manager;
 use tokio::sync::Mutex as AsyncMutex;
+
+// ── TLS setup helper ──────────────────────────────────────────────────────────
+
+fn setup_tls(data_dir: &std::path::Path) -> Result<rustls::ServerConfig, crate::error::AppError> {
+    let (ca_cert, ca_key) = crate::tls::generate_ca()?;
+    let (leaf_cert_pem, leaf_key_pem) = crate::tls::generate_leaf(&ca_cert, &ca_key)?;
+    crate::tls::persist_certs(
+        data_dir,
+        &ca_cert.pem(),
+        &ca_key.serialize_pem(),
+        &leaf_cert_pem,
+        &leaf_key_pem,
+    )?;
+    crate::tls::install_ca(data_dir)?;
+    crate::tls::make_tls_config(&leaf_cert_pem, &leaf_key_pem)
+}
+
+// ── App entry point ───────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -48,13 +67,80 @@ pub fn run() {
             let store = AppStore::new(app.handle().clone());
             app.manage(StoreState(Mutex::new(store)));
 
-            // Global server — read saved port, create (not started yet)
+            // Global server port
             let global_port = {
                 let s = app.state::<StoreState>();
                 let s = s.0.lock().unwrap();
                 s.load_port_config().unwrap_or_default().port
             };
-            app.manage(AsyncMutex::new(GlobalServer::new(global_port)));
+
+            // TLS setup — done synchronously in setup() so it can show a dialog.
+            let tls_config: Option<Arc<rustls::ServerConfig>> = {
+                let data_dir = app.path().app_data_dir()?;
+
+                if let Some(certs) = crate::tls::load_certs(&data_dir) {
+                    // Existing certs found — load them.
+                    match crate::tls::make_tls_config(&certs.leaf_cert_pem, &certs.leaf_key_pem) {
+                        Ok(cfg) => {
+                            tracing::info!("loaded existing TLS certs from disk");
+                            Some(Arc::new(cfg))
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to load stored TLS certs: {e} — falling back to HTTP");
+                            None
+                        }
+                    }
+                } else {
+                    // No certs — ask for consent.
+                    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+                    let approved = app
+                        .dialog()
+                        .message(
+                            "Overfry will generate a private Certificate Authority (CA) and \
+                            install it into your system's certificate trust store.\n\n\
+                            This allows Claude.ai and other MCP clients to connect securely \
+                            over HTTPS.\n\n\
+                            \u{2022} The CA is generated locally on your machine\n\
+                            \u{2022} It only signs certificates for 127.0.0.1 and localhost\n\
+                            \u{2022} It is never shared with any external server\n\n\
+                            You may be prompted by your operating system to confirm this action.\n\n\
+                            Proceed?",
+                        )
+                        .title("Enable Secure HTTPS Connection")
+                        .buttons(MessageDialogButtons::OkCancel)
+                        .blocking_show();
+
+                    if approved {
+                        match setup_tls(&data_dir) {
+                            Ok(cfg) => {
+                                tracing::info!("TLS setup complete — HTTPS enabled");
+                                Some(Arc::new(cfg))
+                            }
+                            Err(e) => {
+                                tracing::error!("TLS setup failed: {e} — falling back to HTTP");
+                                let _ = app
+                                    .dialog()
+                                    .message(format!(
+                                        "HTTPS setup failed: {e}\n\n\
+                                        The app will use HTTP instead. \
+                                        Claude.ai connections may not work."
+                                    ))
+                                    .title("HTTPS Setup Failed")
+                                    .blocking_show();
+                                None
+                            }
+                        }
+                    } else {
+                        tracing::info!("user declined TLS setup — using HTTP");
+                        None
+                    }
+                }
+            };
+
+            app.manage(AsyncMutex::new(GlobalServer::new_with_tls(
+                global_port,
+                tls_config,
+            )));
 
             // Async startup tasks
             let handle = app.handle().clone();
@@ -96,6 +182,7 @@ pub fn run() {
             start_oauth_flow,
             pick_folder,
             get_audit_log,
+            get_tls_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

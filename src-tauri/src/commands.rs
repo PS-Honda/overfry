@@ -457,6 +457,13 @@ pub async fn pick_folder(app: AppHandle) -> CmdResult<Option<String>> {
     Ok(path.map(|p| p.to_string()))
 }
 
+// ── TLS status ────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_tls_status(gs: State<'_, Mutex<GlobalServer>>) -> CmdResult<bool> {
+    Ok(gs.lock().await.is_https())
+}
+
 // ── Audit log ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]

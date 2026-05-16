@@ -16,3 +16,4 @@ export const setGlobalPort     = (port)     => invoke("set_global_port",    { po
 export const pickFolder        = ()         => invoke("pick_folder");
 export const getAuditLog       = (limit)    => invoke("get_audit_log",      { limit: limit ?? 50 });
 export const startOAuthFlow    = (id)       => invoke("start_oauth_flow",   { connectionId: id });
+export const getTlsStatus      = ()         => invoke("get_tls_status",      {});

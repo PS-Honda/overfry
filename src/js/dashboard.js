@@ -1,4 +1,4 @@
-import { listConnections, startServer, stopServer, deleteConnection, startOAuthFlow, getGlobalPort, setGlobalPort } from "./api.js";
+import { listConnections, startServer, stopServer, deleteConnection, startOAuthFlow, getGlobalPort, setGlobalPort, getTlsStatus } from "./api.js";
 
 const dashboard       = document.getElementById("dashboard");
 const emptyState      = document.getElementById("empty-state");
@@ -23,6 +23,8 @@ const STATUS_CLASSES = ["stopped", "running", "starting", "error"];
 
 // Current global port — starts at default, loaded async on init
 let globalPort = 51552;
+// Whether the server is running HTTPS
+let isHttps = false;
 
 function statusClass(status) {
   if (!status) return "stopped";
@@ -37,7 +39,8 @@ function refreshCount() {
 }
 
 function buildUrl(conn) {
-  return `http://127.0.0.1:${globalPort}${conn.mcp_path || "/mcp"}`;
+  const scheme = isHttps ? "https" : "http";
+  return `${scheme}://127.0.0.1:${globalPort}${conn.mcp_path || "/mcp"}`;
 }
 
 function updateCard(card, conn) {
@@ -181,6 +184,10 @@ export async function loadDashboard() {
   } catch { /* use default */ }
 
   try {
+    isHttps = await getTlsStatus();
+  } catch { /* use default (false = HTTP) */ }
+
+  try {
     const conns = await listConnections();
     conns.forEach(renderCard);
   } catch (e) {
@@ -194,6 +201,13 @@ function openSettings() {
   settingsPort.value = globalPort;
   settingsStatus.style.display = "none";
   settingsModal.classList.add("is-active");
+  const tlsEl = document.getElementById("settings-tls-status");
+  if (tlsEl) {
+    tlsEl.textContent = isHttps
+      ? "Active — serving HTTPS on port " + globalPort
+      : "Disabled — using HTTP only";
+    tlsEl.className = isHttps ? "is-size-7 has-text-success" : "is-size-7 has-text-warning";
+  }
 }
 
 function closeSettings() {
