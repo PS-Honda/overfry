@@ -1,4 +1,4 @@
-import { loadDashboard, updateCardStatus, handlePortChanged, handleTunnelChanged } from "./dashboard.js";
+import { loadDashboard, updateCardStatus, handlePortChanged, handleTunnelChanged, handleAuthStatusChanged } from "./dashboard.js";
 import { appendAuditEntry } from "./audit.js";
 import { openModal } from "./modal.js";
 
@@ -27,5 +27,9 @@ function wireTauriEvents() {
 
   listen("tunnel-status-changed", ({ payload }) => {
     handleTunnelChanged(payload ?? { url: null, status: "Unavailable" });
+  });
+
+  listen("auth-status-changed", ({ payload }) => {
+    handleAuthStatusChanged(payload ?? {});
   });
 }

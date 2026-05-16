@@ -18,3 +18,5 @@ export const getAuditLog       = (limit)    => invoke("get_audit_log",      { li
 export const startOAuthFlow      = (id)    => invoke("start_oauth_flow",      { connectionId: id });
 export const getOAuthCredentials = ()      => invoke("get_oauth_credentials", {});
 export const rotateOAuthSecret   = ()      => invoke("rotate_oauth_secret",   {});
+export const getAuthStatus       = ()        => invoke("get_auth_status",        {});
+export const setLocalAuthEnabled = (enabled) => invoke("set_local_auth_enabled",  { enabled });

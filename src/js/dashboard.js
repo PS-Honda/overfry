@@ -1,4 +1,4 @@
-import { listConnections, startServer, stopServer, deleteConnection, startOAuthFlow, getGlobalPort, setGlobalPort, getOAuthCredentials, rotateOAuthSecret } from "./api.js";
+import { listConnections, startServer, stopServer, deleteConnection, startOAuthFlow, getGlobalPort, setGlobalPort, getOAuthCredentials, rotateOAuthSecret, getAuthStatus, setLocalAuthEnabled } from "./api.js";
 
 const dashboard       = document.getElementById("dashboard");
 const emptyState      = document.getElementById("empty-state");
@@ -238,6 +238,18 @@ async function openSettings() {
     if (idEl)  idEl.value  = creds.client_id;
     if (secEl) secEl.value = creds.client_secret;
   } catch { /* ignore */ }
+
+  // Load auth status
+  try {
+    const status = await getAuthStatus();
+    const toggle = document.getElementById("auth-local-toggle");
+    const badge  = document.getElementById("auth-forced-badge");
+    if (toggle) {
+      toggle.checked  = status.local_enabled;
+      toggle.disabled = status.tunnel_forced;
+    }
+    if (badge) badge.style.display = status.tunnel_forced ? "" : "none";
+  } catch { /* ignore */ }
 }
 
 function closeSettings() {
@@ -347,6 +359,26 @@ function wireOAuthSettings() {
       }
     }
   });
+
+  document.getElementById("auth-local-toggle")?.addEventListener("change", async (e) => {
+    try {
+      await setLocalAuthEnabled(e.target.checked);
+    } catch {
+      e.target.checked = !e.target.checked; // revert on error
+    }
+  });
 }
 
 wireOAuthSettings();
+
+export function handleAuthStatusChanged({ tunnel_forced, local_enabled }) {
+  const toggle = document.getElementById("auth-local-toggle");
+  const badge  = document.getElementById("auth-forced-badge");
+  // Only update if settings modal is open
+  if (!document.getElementById("modal-settings")?.classList.contains("is-active")) return;
+  if (toggle) {
+    toggle.checked  = local_enabled;
+    toggle.disabled = tunnel_forced;
+  }
+  if (badge) badge.style.display = tunnel_forced ? "" : "none";
+}

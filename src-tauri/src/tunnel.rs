@@ -50,7 +50,18 @@ async fn spawn_cloudflared(app: AppHandle, port: u16) {
         Ok(pair) => pair,
         Err(e) => {
             tracing::warn!("cloudflared: spawn failed: {e}");
+            let local_enabled = if let Some(h) = app.try_state::<crate::incoming_auth::IncomingAuthStateHandle>() {
+                h.0.set_tunnel_active(false);
+                h.0.local_enabled()
+            } else {
+                false
+            };
             let _ = app.emit("tunnel-status-changed", json!({ "url": null, "status": "Unavailable" }));
+            let _ = app.emit("auth-status-changed", json!({
+                "tunnel_forced": false,
+                "local_enabled": local_enabled,
+                "effective":     local_enabled,
+            }));
             return;
         }
     };
@@ -68,7 +79,18 @@ async fn spawn_cloudflared(app: AppHandle, port: u16) {
             }
             CommandEvent::Terminated(_) => {
                 tracing::info!("cloudflared: process terminated");
+                let local_enabled = if let Some(h) = app.try_state::<crate::incoming_auth::IncomingAuthStateHandle>() {
+                    h.0.set_tunnel_active(false);
+                    h.0.local_enabled()
+                } else {
+                    false
+                };
                 let _ = app.emit("tunnel-status-changed", json!({ "url": null, "status": "Unavailable" }));
+                let _ = app.emit("auth-status-changed", json!({
+                    "tunnel_forced": false,
+                    "local_enabled": local_enabled,
+                    "effective":     local_enabled,
+                }));
                 break;
             }
             _ => continue,
@@ -80,7 +102,18 @@ async fn spawn_cloudflared(app: AppHandle, port: u16) {
             if let Some(state) = app.try_state::<TunnelState>() {
                 state.0.lock().unwrap().url = Some(url.clone());
             }
+            let local_enabled = if let Some(h) = app.try_state::<crate::incoming_auth::IncomingAuthStateHandle>() {
+                h.0.set_tunnel_active(true);
+                h.0.local_enabled()
+            } else {
+                false
+            };
             let _ = app.emit("tunnel-status-changed", json!({ "url": url, "status": "Active" }));
+            let _ = app.emit("auth-status-changed", json!({
+                "tunnel_forced": true,
+                "local_enabled": local_enabled,
+                "effective":     true,
+            }));
             // Keep draining so cloudflared's pipe stays open
         }
     }

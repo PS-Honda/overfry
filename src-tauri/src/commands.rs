@@ -17,21 +17,27 @@ use crate::{
     oauth,
     obsidian_fs_server,
     proxy_server,
-    store::StoreState,
+    store::{AuthSettings, StoreState},
 };
 
 type CmdResult<T> = Result<T, String>;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+const CONNECTOR_PREFIX: &str = "/connector/";
+
 /// Validate and normalise an mcp_path from user input.
 fn normalise_mcp_path(raw: Option<String>, name: &str) -> String {
     let p = raw.unwrap_or_default();
     let p = p.trim().to_string();
-    if p.starts_with('/') && !p.contains(' ') && p.len() <= 64 {
-        p
+
+    if p.starts_with(CONNECTOR_PREFIX) && !p.contains(' ') && p.len() <= 80 {
+        p // already correct
+    } else if p.starts_with('/') && !p.contains(' ') && p.len() <= 64 {
+        // user gave bare path — enforce prefix
+        format!("{CONNECTOR_PREFIX}{}", p.trim_start_matches('/'))
     } else {
-        // auto-slug from name
+        // auto-generate from name
         let slug = name
             .to_lowercase()
             .chars()
@@ -39,7 +45,7 @@ fn normalise_mcp_path(raw: Option<String>, name: &str) -> String {
             .collect::<String>()
             .trim_matches('-')
             .to_string();
-        format!("/mcp/{slug}")
+        format!("{CONNECTOR_PREFIX}{slug}")
     }
 }
 
@@ -495,6 +501,33 @@ pub async fn rotate_oauth_secret(
     }))
 }
 
+// ── Incoming auth ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_auth_status(
+    auth: State<'_, IncomingAuthStateHandle>,
+) -> CmdResult<serde_json::Value> {
+    let local  = auth.0.local_enabled();
+    let forced = auth.0.is_tunnel_forced();
+    Ok(serde_json::json!({
+        "local_enabled":  local,
+        "tunnel_forced":  forced,
+        "effective":      local || forced,
+    }))
+}
+
+#[tauri::command]
+pub async fn set_local_auth_enabled(
+    store:   State<'_, StoreState>,
+    auth:    State<'_, IncomingAuthStateHandle>,
+    enabled: bool,
+) -> CmdResult<()> {
+    auth.0.set_local_enabled(enabled);
+    let s = store.0.lock().unwrap();
+    s.save_auth_settings(&AuthSettings { local_enabled: enabled })
+        .map_err(|e| e.to_string())
+}
+
 // ── Audit log ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -614,59 +647,67 @@ mod tests {
     #[test]
     fn path_is_taken_detects_collision() {
         let id = Uuid::new_v4();
-        let conns = vec![make_conn(id, "/mcp/vault")];
-        assert!(path_is_taken(&conns, "/mcp/vault", None));
+        let conns = vec![make_conn(id, "/connector/vault")];
+        assert!(path_is_taken(&conns, "/connector/vault", None));
     }
 
     #[test]
     fn path_is_taken_no_collision_different_path() {
         let id = Uuid::new_v4();
-        let conns = vec![make_conn(id, "/mcp/vault")];
-        assert!(!path_is_taken(&conns, "/mcp/other", None));
+        let conns = vec![make_conn(id, "/connector/vault")];
+        assert!(!path_is_taken(&conns, "/connector/other", None));
     }
 
     #[test]
     fn path_is_taken_excludes_own_id_on_update() {
         let id = Uuid::new_v4();
-        let conns = vec![make_conn(id, "/mcp/vault")];
+        let conns = vec![make_conn(id, "/connector/vault")];
         // When editing the same connection, same path should not be a collision
-        assert!(!path_is_taken(&conns, "/mcp/vault", Some(id)));
+        assert!(!path_is_taken(&conns, "/connector/vault", Some(id)));
     }
 
     #[test]
     fn path_is_taken_collision_from_different_id() {
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
-        let conns = vec![make_conn(id1, "/mcp/vault"), make_conn(id2, "/mcp/other")];
-        // id2 wants /mcp/vault — already taken by id1
-        assert!(path_is_taken(&conns, "/mcp/vault", Some(id2)));
+        let conns = vec![make_conn(id1, "/connector/vault"), make_conn(id2, "/connector/other")];
+        // id2 wants /connector/vault — already taken by id1
+        assert!(path_is_taken(&conns, "/connector/vault", Some(id2)));
     }
 
     // ── normalise_mcp_path tests ───────────────────────────────────────────────
 
     #[test]
     fn normalise_valid_path_passes_through() {
-        let result = normalise_mcp_path(Some("/mcp/vault".to_string()), "My Vault");
-        assert_eq!(result, "/mcp/vault");
+        // Already correct /connector/ prefix — passes through unchanged
+        let result = normalise_mcp_path(Some("/connector/vault".to_string()), "My Vault");
+        assert_eq!(result, "/connector/vault");
     }
 
     #[test]
     fn normalise_generates_slug_from_name_when_empty() {
         let result = normalise_mcp_path(None, "My Vault");
-        assert_eq!(result, "/mcp/my-vault");
+        assert_eq!(result, "/connector/my-vault");
     }
 
     #[test]
     fn normalise_slug_from_name_with_spaces_in_path() {
         // Path with space is invalid — should auto-slug from name
         let result = normalise_mcp_path(Some("/bad path".to_string()), "My Vault");
-        assert_eq!(result, "/mcp/my-vault");
+        assert_eq!(result, "/connector/my-vault");
     }
 
     #[test]
     fn normalise_slug_no_leading_slash_generates_slug() {
         // Missing leading slash → auto-slug
         let result = normalise_mcp_path(Some("noslash".to_string()), "My Vault");
-        assert_eq!(result, "/mcp/my-vault");
+        assert_eq!(result, "/connector/my-vault");
+    }
+
+    #[test]
+    fn normalise_bare_slash_path_gets_prefix() {
+        // Bare path like /vault → /connector/vault
+        let result = normalise_mcp_path(Some("/vault".to_string()), "My Vault");
+        assert_eq!(result, "/connector/vault");
     }
 }

@@ -1,6 +1,13 @@
 //! Minimal OAuth2 client_credentials server for protecting the public tunnel endpoint.
 
-use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
 use axum::{
     body::Bytes,
@@ -21,14 +28,18 @@ const TOKEN_TTL: Duration = Duration::from_secs(86400); // 24 hours
 #[derive(Clone)]
 pub struct IncomingAuthState {
     pub credentials: Arc<RwLock<OAuthCredentials>>,
-    tokens: Arc<RwLock<HashMap<String, Instant>>>,
+    tokens:          Arc<RwLock<HashMap<String, Instant>>>,
+    local_enabled:   Arc<AtomicBool>,  // user preference, persisted
+    tunnel_active:   Arc<AtomicBool>,  // runtime, set by tunnel.rs
 }
 
 impl IncomingAuthState {
-    pub fn new(credentials: OAuthCredentials) -> Self {
+    pub fn new(credentials: OAuthCredentials, local_enabled: bool) -> Self {
         Self {
-            credentials: Arc::new(RwLock::new(credentials)),
-            tokens: Arc::new(RwLock::new(HashMap::new())),
+            credentials:   Arc::new(RwLock::new(credentials)),
+            tokens:        Arc::new(RwLock::new(HashMap::new())),
+            local_enabled: Arc::new(AtomicBool::new(local_enabled)),
+            tunnel_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -58,6 +69,27 @@ impl IncomingAuthState {
         drop(creds);
         let mut tokens = self.tokens.write().await;
         tokens.clear();
+    }
+
+    pub fn should_authenticate(&self) -> bool {
+        self.local_enabled.load(Ordering::Relaxed)
+            || self.tunnel_active.load(Ordering::Relaxed)
+    }
+
+    pub fn set_local_enabled(&self, v: bool) {
+        self.local_enabled.store(v, Ordering::Relaxed);
+    }
+
+    pub fn set_tunnel_active(&self, v: bool) {
+        self.tunnel_active.store(v, Ordering::Relaxed);
+    }
+
+    pub fn is_tunnel_forced(&self) -> bool {
+        self.tunnel_active.load(Ordering::Relaxed)
+    }
+
+    pub fn local_enabled(&self) -> bool {
+        self.local_enabled.load(Ordering::Relaxed)
     }
 }
 
@@ -104,6 +136,10 @@ pub async fn token_endpoint(
 
 /// Validate incoming Bearer token. Returns None if valid, Some(Response) if rejected.
 pub async fn check_bearer(auth: &Arc<IncomingAuthState>, headers: &HeaderMap) -> Option<Response> {
+    if !auth.should_authenticate() {
+        return None; // auth disabled — pass through
+    }
+
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())

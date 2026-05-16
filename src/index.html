@@ -123,9 +123,9 @@
         <div class="field">
           <label class="label is-small">MCP Path</label>
           <div class="control">
-            <input id="fs-mcp-path" class="input is-small" type="text" placeholder="/mcp">
+            <input id="fs-mcp-path" class="input is-small" type="text" placeholder="/connector/my-vault">
           </div>
-          <p class="help has-text-grey">URL path for this connection. Leave blank to auto-generate from name.</p>
+          <p class="help has-text-grey">URL path for this connection. Leave blank to auto-generate. Prefix /connector/ is enforced automatically.</p>
         </div>
       </div>
 
@@ -219,9 +219,9 @@
         <div class="field">
           <label class="label is-small">MCP Path</label>
           <div class="control">
-            <input id="rp-mcp-path" class="input is-small" type="text" placeholder="/mcp">
+            <input id="rp-mcp-path" class="input is-small" type="text" placeholder="/connector/outline">
           </div>
-          <p class="help has-text-grey">Local path for this connection (e.g. /mcp/outline). Leave blank to auto-generate.</p>
+          <p class="help has-text-grey">URL path for this connection. Leave blank to auto-generate. Prefix /connector/ is enforced automatically.</p>
         </div>
       </div>
 
@@ -290,6 +290,20 @@
         </div>
         <button id="btn-rotate-secret" class="button is-small is-warning is-light">🔄 Rotate Secret</button>
         <p id="oauth-rotate-status" class="help" style="display:none;"></p>
+      </div>
+      <!-- Incoming Auth toggle -->
+      <div class="field mt-4">
+        <label class="label is-small">
+          Incoming Auth
+          <span id="auth-forced-badge" class="tag is-warning is-small ml-2" style="display:none;">forced — tunnel active</span>
+        </label>
+        <div class="control">
+          <label class="checkbox is-small">
+            <input type="checkbox" id="auth-local-toggle">
+            Require Bearer token for local connections (Claude Desktop, curl)
+          </label>
+        </div>
+        <p class="help has-text-grey mt-1">When tunnel is active, auth is always enforced regardless of this setting.</p>
       </div>
     </section>
     <footer class="modal-card-foot is-justify-content-flex-end">

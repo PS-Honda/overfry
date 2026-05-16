@@ -70,7 +70,13 @@ pub fn run() {
                 creds
             };
 
-            let auth_state = Arc::new(incoming_auth::IncomingAuthState::new(oauth_creds));
+            let auth_settings = {
+                let s = app.state::<StoreState>();
+                let s = s.0.lock().unwrap();
+                s.load_auth_settings().unwrap_or_default()
+            };
+
+            let auth_state = Arc::new(incoming_auth::IncomingAuthState::new(oauth_creds, auth_settings.local_enabled));
             app.manage(IncomingAuthStateHandle(auth_state.clone()));
 
             // Build GlobalServer with auth
@@ -125,6 +131,8 @@ pub fn run() {
             get_audit_log,
             get_oauth_credentials,
             rotate_oauth_secret,
+            get_auth_status,
+            set_local_auth_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

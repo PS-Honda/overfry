@@ -9,6 +9,7 @@ use crate::{error::AppError, models::{Connection, PortConfig}};
 const KEY_CONNECTIONS:       &str = "connections";
 const KEY_PORT_CONFIG:       &str = "port_config";
 const KEY_OAUTH_CREDENTIALS: &str = "oauth_credentials";
+const KEY_AUTH_SETTINGS:     &str = "auth_settings";
 const STORE_FILE:            &str = "overfry-store.json";
 
 // ── OAuthCredentials ──────────────────────────────────────────────────────────
@@ -17,6 +18,14 @@ const STORE_FILE:            &str = "overfry-store.json";
 pub struct OAuthCredentials {
     pub client_id:     String,
     pub client_secret: String,
+}
+
+// ── AuthSettings ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct AuthSettings {
+    #[serde(default)]
+    pub local_enabled: bool,
 }
 
 impl OAuthCredentials {
@@ -90,6 +99,21 @@ impl AppStore {
         let store = self.store()?;
         let val = serde_json::to_value(creds).map_err(|e| AppError::Other(e.to_string()))?;
         store.set(KEY_OAUTH_CREDENTIALS, val);
+        store.save().map_err(|e| AppError::Store(e.to_string()))
+    }
+
+    pub fn load_auth_settings(&self) -> Result<AuthSettings, AppError> {
+        let store = self.store()?;
+        match store.get(KEY_AUTH_SETTINGS) {
+            Some(v) => serde_json::from_value(v).map_err(|e| AppError::Other(e.to_string())),
+            None    => Ok(AuthSettings::default()),
+        }
+    }
+
+    pub fn save_auth_settings(&self, s: &AuthSettings) -> Result<(), AppError> {
+        let store = self.store()?;
+        let val = serde_json::to_value(s).map_err(|e| AppError::Other(e.to_string()))?;
+        store.set(KEY_AUTH_SETTINGS, val);
         store.save().map_err(|e| AppError::Store(e.to_string()))
     }
 }

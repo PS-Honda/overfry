@@ -195,9 +195,9 @@ btnBack.addEventListener("click", () => { showStep(1); modalTitle.textContent = 
 modalClose.addEventListener("click", closeModal);
 modalBg.addEventListener("click",    closeModal);
 
-// Slug helper: turn name into /mcp/<slug>
+// Slug helper: turn name into /connector/<slug>
 function toSlug(name) {
-  return "/mcp/" + name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return "/connector/" + name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
 function buildRequest() {
