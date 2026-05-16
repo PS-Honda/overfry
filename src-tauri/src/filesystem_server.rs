@@ -125,6 +125,7 @@ pub fn create_router(
     Router::new()
         .route(&path, get(handle_sse).post(handle_rpc))
         .with_state(state)
+        .layer(crate::cors::make_cors_layer())
         .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -139,7 +140,7 @@ async fn handle_rpc(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if !origin_ok(&headers) {
+    if !crate::cors::origin_ok(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let body: Value = match serde_json::from_slice(&body) {
@@ -168,21 +169,11 @@ async fn handle_rpc(
 }
 
 async fn handle_sse(headers: HeaderMap) -> Response {
-    if !origin_ok(&headers) {
+    if !crate::cors::origin_ok(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let stream = stream::pending::<Result<Event, Infallible>>();
     Sse::new(stream).into_response()
-}
-
-// ── Security ───────────────────────────────────────────────────────────────────
-
-pub(crate) fn origin_ok(headers: &HeaderMap) -> bool {
-    match headers.get("origin").and_then(|v| v.to_str().ok()) {
-        None => true, // no Origin header = same-origin or non-browser → allow
-        Some(o) if o.starts_with("tauri://") => true,
-        Some(_) => false,
-    }
 }
 
 // ── MCP dispatch ───────────────────────────────────────────────────────────────
@@ -592,39 +583,40 @@ mod tests {
         h
     }
 
+    // origin_ok is now shared in crate::cors — smoke-test a few cases here
+    // to ensure the import resolves; comprehensive tests live in cors.rs.
+
     #[test]
     fn origin_ok_tauri_scheme_allowed() {
-        // tauri:// origin must be accepted (Tauri app itself)
         let h = headers_with_origin("tauri://localhost");
-        assert!(origin_ok(&h));
+        assert!(crate::cors::origin_ok(&h));
     }
 
     #[test]
-    fn origin_ok_rejects_http_localhost() {
-        // http://127.0.0.1 must be rejected (DNS rebinding vector)
-        let h = headers_with_origin("http://127.0.0.1:50000");
-        assert!(!origin_ok(&h));
+    fn origin_ok_localhost_port_allowed() {
+        // MCP Inspector and local tools send http://localhost:PORT
+        let h = headers_with_origin("http://localhost:5173");
+        assert!(crate::cors::origin_ok(&h));
     }
 
     #[test]
-    fn origin_ok_rejects_http_scheme() {
-        // Any plain http:// origin must be rejected
+    fn origin_ok_loopback_port_allowed() {
+        // Alternate loopback form
+        let h = headers_with_origin("http://127.0.0.1:51552");
+        assert!(crate::cors::origin_ok(&h));
+    }
+
+    #[test]
+    fn origin_ok_rejects_external() {
         let h = headers_with_origin("http://evil.com");
-        assert!(!origin_ok(&h));
-    }
-
-    #[test]
-    fn origin_ok_rejects_https_scheme() {
-        // Any https:// origin must be rejected (not a Tauri origin)
-        let h = headers_with_origin("https://example.com");
-        assert!(!origin_ok(&h));
+        assert!(!crate::cors::origin_ok(&h));
+        let h2 = headers_with_origin("https://example.com");
+        assert!(!crate::cors::origin_ok(&h2));
     }
 
     #[test]
     fn origin_ok_no_origin_header_allowed() {
-        // No Origin header (same-origin / non-browser) must be allowed
-        let h = HeaderMap::new();
-        assert!(origin_ok(&h));
+        assert!(crate::cors::origin_ok(&HeaderMap::new()));
     }
 
     #[test]

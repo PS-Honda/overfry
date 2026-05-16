@@ -127,6 +127,7 @@ pub fn create_router(
     Router::new()
         .route(&path, get(handle_sse).post(handle_rpc))
         .with_state(state)
+        .layer(crate::cors::make_cors_layer())
         .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -141,7 +142,7 @@ async fn handle_rpc(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if !origin_ok(&headers) {
+    if !crate::cors::origin_ok(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let body: Value = match serde_json::from_slice(&body) {
@@ -169,21 +170,11 @@ async fn handle_rpc(
 }
 
 async fn handle_sse(headers: HeaderMap) -> Response {
-    if !origin_ok(&headers) {
+    if !crate::cors::origin_ok(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let stream = stream::pending::<Result<Event, Infallible>>();
     Sse::new(stream).into_response()
-}
-
-// ── Security ───────────────────────────────────────────────────────────────────
-
-pub(crate) fn origin_ok(headers: &HeaderMap) -> bool {
-    match headers.get("origin").and_then(|v| v.to_str().ok()) {
-        None => true, // no Origin header = same-origin or non-browser → allow
-        Some(o) if o.starts_with("tauri://") => true,
-        Some(_) => false,
-    }
 }
 
 // ── MCP dispatch ───────────────────────────────────────────────────────────────
@@ -1608,28 +1599,30 @@ mod tests {
     }
 
     // ── Origin security regression tests ─────────────────────────────────────
+    // origin_ok is shared in crate::cors — smoke tests only.
 
     #[test]
     fn origin_ok_tauri_scheme_allowed_obsidian() {
         use axum::http::HeaderMap;
         let mut h = HeaderMap::new();
         h.insert("origin", "tauri://localhost".parse().unwrap());
-        assert!(origin_ok(&h));
+        assert!(crate::cors::origin_ok(&h));
     }
 
     #[test]
-    fn origin_ok_rejects_http_localhost_obsidian() {
+    fn origin_ok_loopback_allowed_obsidian() {
+        // MCP Inspector sends http://127.0.0.1:PORT — must be allowed now
         use axum::http::HeaderMap;
         let mut h = HeaderMap::new();
         h.insert("origin", "http://127.0.0.1:50000".parse().unwrap());
-        assert!(!origin_ok(&h));
+        assert!(crate::cors::origin_ok(&h));
     }
 
     #[test]
     fn origin_ok_no_origin_allowed_obsidian() {
         use axum::http::HeaderMap;
         let h = HeaderMap::new();
-        assert!(origin_ok(&h));
+        assert!(crate::cors::origin_ok(&h));
     }
 
     // ── find_heading_section CRLF regression tests ───────────────────────────

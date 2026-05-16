@@ -23,6 +23,7 @@ use tauri::{Emitter, Manager};
 
 use crate::{
     audit::AuditState,
+    cors::{make_cors_layer, origin_ok},
     error::AppError,
     models::{AuditEntry, AuditResult, AuthConfig, AuthMethod},
     store::StoreState,
@@ -70,6 +71,7 @@ pub fn create_router(
     let router = Router::new()
         .route(&path, get(handle_sse).post(handle_rpc))
         .with_state(state)
+        .layer(make_cors_layer())
         .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -90,6 +92,12 @@ async fn handle_rpc(
         return StatusCode::FORBIDDEN.into_response();
     }
 
+    // Extract Mcp-Session-Id to forward to upstream
+    let session_id = headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned());
+
     // Parse body
     let body_value: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -98,9 +106,8 @@ async fn handle_rpc(
 
     let req_id: Value = body_value.get("id").cloned().unwrap_or(Value::Null);
 
-    // First attempt
     let (audit_result, response) =
-        do_proxy_request(&state, &body_value, req_id.clone()).await;
+        do_proxy_request(&state, &body_value, req_id.clone(), session_id).await;
 
     // Emit audit
     {
@@ -132,6 +139,7 @@ async fn do_proxy_request(
     state:      &Arc<ProxyState>,
     body_value: &Value,
     req_id:     Value,
+    session_id: Option<String>,
 ) -> (AuditResult, Response) {
     let (target_url, bearer) = {
         let auth = state.auth.read().await;
@@ -152,31 +160,96 @@ async fn do_proxy_request(
         }
     }
 
-    match send_request(&state.client, &target_url, bearer.as_deref(), &state.auth, body_value).await {
-        Err(msg) => (AuditResult::Error(msg.clone()), Json(rpc_err(Some(req_id), -32603, msg)).into_response()),
-        Ok((status, bytes)) => {
+    match send_request(
+        &state.client,
+        &target_url,
+        bearer.as_deref(),
+        &state.auth,
+        body_value,
+        session_id.as_deref(),
+    )
+    .await
+    {
+        Err(msg) => (
+            AuditResult::Error(msg.clone()),
+            Json(rpc_err(Some(req_id), -32603, msg)).into_response(),
+        ),
+        Ok((status, resp_headers, bytes)) => {
             // 401 + OAuth → attempt refresh then retry once
             if status == 401 {
                 let is_oauth = state.auth.read().await.auth_method == AuthMethod::OAuth;
                 if is_oauth {
                     if let Ok(new_bearer) = try_refresh(state).await {
-                        // Retry with new token
-                        match send_request(&state.client, &target_url, Some(&new_bearer), &state.auth, body_value).await {
-                            Err(msg) => return (AuditResult::Error(msg.clone()), Json(rpc_err(Some(req_id), -32603, msg)).into_response()),
-                            Ok((_, bytes2)) => return parse_bytes(bytes2, req_id),
+                        match send_request(
+                            &state.client,
+                            &target_url,
+                            Some(&new_bearer),
+                            &state.auth,
+                            body_value,
+                            session_id.as_deref(),
+                        )
+                        .await
+                        {
+                            Err(msg) => {
+                                return (
+                                    AuditResult::Error(msg.clone()),
+                                    Json(rpc_err(Some(req_id), -32603, msg)).into_response(),
+                                )
+                            }
+                            Ok((_, retry_headers, bytes2)) => {
+                                return build_response(bytes2, req_id, &retry_headers);
+                            }
                         }
                     }
                 }
                 let msg = format!("upstream error: {status}");
-                return (AuditResult::Error(msg.clone()), Json(rpc_err(Some(req_id), -32603, msg)).into_response());
+                return (
+                    AuditResult::Error(msg.clone()),
+                    Json(rpc_err(Some(req_id), -32603, msg)).into_response(),
+                );
             }
             if !status.is_success() {
                 let msg = format!("upstream error: {status}");
-                return (AuditResult::Error(msg.clone()), Json(rpc_err(Some(req_id), -32603, msg)).into_response());
+                return (
+                    AuditResult::Error(msg.clone()),
+                    Json(rpc_err(Some(req_id), -32603, msg)).into_response(),
+                );
             }
-            parse_bytes(bytes, req_id)
+            build_response(bytes, req_id, &resp_headers)
         }
     }
+}
+
+/// Dispatch bytes to the right response builder based on upstream Content-Type,
+/// then attach upstream `Mcp-Session-Id` to the response if present.
+fn build_response(
+    bytes:        Bytes,
+    req_id:       Value,
+    resp_headers: &reqwest::header::HeaderMap,
+) -> (AuditResult, Response) {
+    let is_sse = resp_headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.starts_with("text/event-stream"))
+        .unwrap_or(false);
+
+    let (audit, mut response) = if is_sse {
+        sse_passthrough(bytes, req_id)
+    } else {
+        parse_bytes(bytes, req_id)
+    };
+
+    // Forward Mcp-Session-Id from upstream response to client
+    if let Some(sid) = resp_headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Ok(val) = HeaderValue::from_str(sid) {
+            response.headers_mut().insert("mcp-session-id", val);
+        }
+    }
+
+    (audit, response)
 }
 
 fn pick_bearer(auth: &AuthConfig) -> Option<String> {
@@ -196,7 +269,8 @@ async fn send_request(
     bearer:     Option<&str>,
     auth_lock:  &Arc<tokio::sync::RwLock<AuthConfig>>,
     body_value: &Value,
-) -> Result<(reqwest::StatusCode, Bytes), String> {
+    session_id: Option<&str>,
+) -> Result<(reqwest::StatusCode, reqwest::header::HeaderMap, Bytes), String> {
     let extra_headers = {
         let auth = auth_lock.read().await;
         auth.extra_headers.clone()
@@ -204,10 +278,19 @@ async fn send_request(
 
     let mut req_builder = client
         .post(target_url)
-        .header("Content-Type", "application/json");
+        .header("Content-Type", "application/json")
+        // Per MCP spec §2: client MUST include both content types in Accept
+        .header("Accept", "application/json, text/event-stream");
 
     if let Some(token) = bearer {
         req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
+    }
+
+    // Forward Mcp-Session-Id for stateful session continuity (spec §3.3)
+    if let Some(sid) = session_id {
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(sid) {
+            req_builder = req_builder.header("Mcp-Session-Id", val);
+        }
     }
 
     for (k, v) in &extra_headers {
@@ -221,29 +304,71 @@ async fn send_request(
 
     req_builder = req_builder.json(body_value);
 
-    let resp = req_builder.send().await
+    let resp = req_builder
+        .send()
+        .await
         .map_err(|e| format!("upstream request failed: {e}"))?;
 
-    let status = resp.status();
-    let bytes  = resp.bytes().await
+    let status      = resp.status();
+    let resp_headers = resp.headers().clone();
+    let bytes       = resp
+        .bytes()
+        .await
         .map_err(|e| format!("reading upstream body: {e}"))?;
 
-    Ok((status, bytes))
+    Ok((status, resp_headers, bytes))
 }
 
+/// Parse plain-JSON upstream response.
 fn parse_bytes(bytes: Bytes, req_id: Value) -> (AuditResult, Response) {
-    match serde_json::from_slice::<Value>(&bytes) {
-        Err(_) => {
-            let msg = "upstream returned non-JSON body".to_string();
-            (AuditResult::Error(msg.clone()), Json(rpc_err(Some(req_id), -32603, msg)).into_response())
+    // Try plain JSON first
+    if let Ok(mut val) = serde_json::from_slice::<Value>(&bytes) {
+        if val.get("error").is_some() {
+            val["id"] = req_id;
         }
-        Ok(mut val) => {
-            if val.get("error").is_some() {
-                val["id"] = req_id;
+        return (AuditResult::Ok, Json(val).into_response());
+    }
+
+    // Upstream may respond with SSE (text/event-stream) without the Content-Type
+    // header being set — extract first data: event as fallback
+    if let Ok(text) = std::str::from_utf8(&bytes) {
+        for line in text.lines() {
+            let Some(payload) = line.strip_prefix("data: ") else { continue };
+            if payload.trim() == "[DONE]" { continue; }
+            if let Ok(mut val) = serde_json::from_str::<Value>(payload) {
+                if val.get("error").is_some() {
+                    val["id"] = req_id;
+                }
+                return (AuditResult::Ok, Json(val).into_response());
             }
-            (AuditResult::Ok, Json(val).into_response())
         }
     }
+
+    let msg = "upstream returned non-JSON body".to_string();
+    (AuditResult::Error(msg.clone()), Json(rpc_err(Some(req_id), -32603, msg)).into_response())
+}
+
+/// Stream all SSE events from an upstream `text/event-stream` response back
+/// to the client as SSE, preserving all events (not just the first).
+fn sse_passthrough(bytes: Bytes, req_id: Value) -> (AuditResult, Response) {
+    let events: Vec<Result<Event, Infallible>> = if let Ok(text) = std::str::from_utf8(&bytes) {
+        text.lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter(|p| p.trim() != "[DONE]")
+            .filter_map(|p| serde_json::from_str::<Value>(p).ok())
+            .filter_map(|val| Event::default().json_data(val).ok())
+            .map(Ok)
+            .collect()
+    } else {
+        vec![]
+    };
+
+    if events.is_empty() {
+        // Fall back to parse_bytes in case Content-Type was wrong
+        return parse_bytes(bytes, req_id);
+    }
+
+    (AuditResult::Ok, Sse::new(stream::iter(events)).into_response())
 }
 
 async fn try_refresh(state: &Arc<ProxyState>) -> Result<String, ()> {
@@ -293,18 +418,11 @@ async fn handle_sse(headers: HeaderMap) -> Response {
     if !origin_ok(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // Keep SSE connection open for server-initiated messages (spec §4).
+    // We don't currently push server-initiated events, but the pending stream
+    // correctly returns Content-Type: text/event-stream and stays open.
     let stream = stream::pending::<Result<Event, Infallible>>();
     Sse::new(stream).into_response()
-}
-
-// ── Security ───────────────────────────────────────────────────────────────────
-
-fn origin_ok(headers: &HeaderMap) -> bool {
-    match headers.get("origin").and_then(|v| v.to_str().ok()) {
-        None => true, // no Origin header = same-origin or non-browser → allow
-        Some(o) if o.starts_with("tauri://") => true,
-        Some(_) => false,
-    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

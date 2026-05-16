@@ -1,5 +1,6 @@
 mod audit;
 mod commands;
+mod cors;
 mod error;
 mod filesystem_server;
 mod global_server;
