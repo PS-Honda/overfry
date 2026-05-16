@@ -283,9 +283,15 @@
           <span class="row-label">Root</span>
           <span class="root-path-display mono"></span>
         </div>
+        <!-- Public URL (shown when Cloudflare tunnel is active) -->
+        <div class="card-row public-url-row" style="display:none;">
+          <span class="row-label">Public</span>
+          <span class="public-url-display mono" style="font-size:0.65rem;word-break:break-all;"></span>
+        </div>
         <!-- Copy URL sits in body bottom -->
-        <div class="card-row" style="margin-top:6px;">
-          <button class="copy-url-btn button is-info is-small is-light" style="width:100%;font-size:0.7rem;">Copy URL</button>
+        <div class="card-row" style="margin-top:6px;display:flex;gap:4px;">
+          <button class="copy-url-btn button is-info is-small is-light" style="flex:1;font-size:0.7rem;">Copy URL</button>
+          <button class="copy-public-url-btn button is-warning is-small is-light" style="flex:1;font-size:0.7rem;display:none;">Copy Public URL</button>
         </div>
         <!-- Authorize button — only shown for unauthed OAuth connections -->
         <div class="card-row oauth-authorize-row" style="display:none;">

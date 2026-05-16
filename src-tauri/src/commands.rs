@@ -17,6 +17,7 @@ use crate::{
     obsidian_fs_server,
     proxy_server,
     store::StoreState,
+    tunnel,
 };
 
 type CmdResult<T> = Result<T, String>;
@@ -308,6 +309,14 @@ pub async fn start_server(
     }
 
     let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Running"}));
+
+    // Acquire (or reuse) Cloudflare tunnel so Claude.ai can reach this connection
+    let global_port = {
+        let s = store.0.lock().unwrap();
+        s.load_port_config().unwrap_or_default().port
+    };
+    tunnel::tunnel_acquire(&app, global_port);
+
     Ok(())
 }
 
@@ -341,6 +350,10 @@ pub async fn stop_server(
     }
 
     let _ = app.emit("connection-status-changed", json!({"id": &id, "status": "Stopped"}));
+
+    // Release tunnel ref-count; kills cloudflared when last connection stops
+    tunnel::tunnel_release(&app);
+
     Ok(())
 }
 

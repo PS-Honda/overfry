@@ -1,4 +1,4 @@
-import { loadDashboard, updateCardStatus, handlePortChanged } from "./dashboard.js";
+import { loadDashboard, updateCardStatus, handlePortChanged, handleTunnelChanged } from "./dashboard.js";
 import { appendAuditEntry } from "./audit.js";
 import { openModal } from "./modal.js";
 
@@ -23,5 +23,9 @@ function wireTauriEvents() {
 
   listen("global-port-changed", ({ payload }) => {
     if (payload?.port) handlePortChanged(payload.port);
+  });
+
+  listen("tunnel-status-changed", ({ payload }) => {
+    handleTunnelChanged(payload?.url ?? null);
   });
 }

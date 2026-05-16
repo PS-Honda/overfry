@@ -25,6 +25,8 @@ const STATUS_CLASSES = ["stopped", "running", "starting", "error"];
 let globalPort = 51552;
 // Whether the server is running HTTPS
 let isHttps = false;
+// Public base URL from Cloudflare tunnel (null when tunnel is down)
+let tunnelBaseUrl = null;
 
 function statusClass(status) {
   if (!status) return "stopped";
@@ -41,6 +43,29 @@ function refreshCount() {
 function buildUrl(conn) {
   const scheme = isHttps ? "https" : "http";
   return `${scheme}://127.0.0.1:${globalPort}${conn.mcp_path || "/mcp"}`;
+}
+
+function buildPublicUrl(conn) {
+  if (!tunnelBaseUrl) return null;
+  return `${tunnelBaseUrl}${conn.mcp_path || "/mcp"}`;
+}
+
+/** Refresh public URL display on all cards when tunnel state changes */
+function updateAllPublicUrls() {
+  document.querySelectorAll(".connection-card").forEach(card => {
+    if (!card._conn) return;
+    updatePublicUrlOnCard(card, card._conn);
+  });
+}
+
+function updatePublicUrlOnCard(card, conn) {
+  const publicUrl = buildPublicUrl(conn);
+  const publicRow = card.querySelector(".public-url-row");
+  const publicEl  = card.querySelector(".public-url-display");
+  const copyPublicBtn = card.querySelector(".copy-public-url-btn");
+  if (publicRow)    publicRow.style.display    = publicUrl ? "" : "none";
+  if (publicEl)     publicEl.textContent        = publicUrl ?? "";
+  if (copyPublicBtn) copyPublicBtn.style.display = publicUrl ? "" : "none";
 }
 
 function updateCard(card, conn) {
@@ -87,6 +112,8 @@ function updateCard(card, conn) {
     const needsAuth = conn.auth_config?.auth_method === "oauth" && !conn.auth_config?.is_authorized;
     oauthRow.style.display = needsAuth ? "" : "none";
   }
+
+  updatePublicUrlOnCard(card, conn);
 
   refreshCount();
 }
@@ -146,6 +173,12 @@ export function renderCard(conn) {
     const c   = card._conn ?? conn;
     const url = buildUrl(c);
     navigator.clipboard.writeText(url).catch(() => {});
+  });
+
+  card.querySelector(".copy-public-url-btn")?.addEventListener("click", () => {
+    const c   = card._conn ?? conn;
+    const url = buildPublicUrl(c);
+    if (url) navigator.clipboard.writeText(url).catch(() => {});
   });
 
   card.querySelector(".oauth-authorize-btn")?.addEventListener("click", async () => {
@@ -247,4 +280,9 @@ btnSavePort.addEventListener("click", async () => {
 export function handlePortChanged(port) {
   globalPort = port;
   updateAllUrls();
+}
+
+export function handleTunnelChanged(url) {
+  tunnelBaseUrl = url ?? null;
+  updateAllPublicUrls();
 }

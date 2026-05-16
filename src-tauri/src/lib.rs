@@ -11,6 +11,7 @@ mod proxy_server;
 mod security;
 mod store;
 mod tls;
+mod tunnel;
 
 use std::sync::{Arc, Mutex};
 
@@ -21,6 +22,7 @@ use models::ConnectionStatus;
 use store::{AppStore, StoreState};
 use tauri::Manager;
 use tokio::sync::Mutex as AsyncMutex;
+use tunnel::{TunnelManager, TunnelState};
 
 // ── TLS setup helper ──────────────────────────────────────────────────────────
 
@@ -142,6 +144,8 @@ pub fn run() {
                 global_port,
                 tls_config,
             )));
+
+            app.manage(TunnelState(Mutex::new(TunnelManager::new())));
 
             // Async startup tasks
             let handle = app.handle().clone();
