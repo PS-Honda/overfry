@@ -126,6 +126,7 @@ pub fn create_router(
         .route(&path, get(handle_sse).post(handle_rpc))
         .with_state(state)
         .layer(crate::cors::make_cors_layer())
+        .layer(axum::middleware::from_fn(crate::cors::private_network_header))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,

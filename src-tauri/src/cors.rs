@@ -1,4 +1,4 @@
-use axum::http::HeaderMap;
+use axum::{extract::Request, http::HeaderMap, middleware::Next, response::Response};
 use tower_http::cors::AllowOrigin;
 
 /// Allowed MCP client origins (applied in both `origin_ok` and `make_cors_layer`):
@@ -38,6 +38,23 @@ pub fn make_cors_layer() -> tower_http::cors::CorsLayer {
         }))
         .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
         .allow_headers(tower_http::cors::Any)
+        // Expose Mcp-Session-Id so browser JS can read it (non-safelisted header)
+        .expose_headers([
+            "mcp-session-id".parse::<axum::http::HeaderName>().unwrap(),
+        ])
+}
+
+/// Middleware: inject `Access-Control-Allow-Private-Network: true` on every
+/// response.  Required by Chrome's Private Network Access spec when a public
+/// origin (https://claude.ai) fetches a private-network address (127.0.0.1).
+/// Without this header Chrome silently blocks the preflight.
+pub async fn private_network_header(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        "access-control-allow-private-network",
+        axum::http::HeaderValue::from_static("true"),
+    );
+    response
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

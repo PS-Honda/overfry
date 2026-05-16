@@ -72,6 +72,7 @@ pub fn create_router(
         .route(&path, get(handle_sse).post(handle_rpc))
         .with_state(state)
         .layer(make_cors_layer())
+        .layer(axum::middleware::from_fn(crate::cors::private_network_header))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -348,27 +349,41 @@ fn parse_bytes(bytes: Bytes, req_id: Value) -> (AuditResult, Response) {
     (AuditResult::Error(msg.clone()), Json(rpc_err(Some(req_id), -32603, msg)).into_response())
 }
 
-/// Stream all SSE events from an upstream `text/event-stream` response back
-/// to the client as SSE, preserving all events (not just the first).
+/// Handle an upstream `text/event-stream` response:
+/// - Single event  → return `application/json` (max client compatibility; Claude.ai
+///   web UI handles JSON responses to POST but may not handle SSE)
+/// - Multiple events → return `text/event-stream` SSE (preserves all responses)
 fn sse_passthrough(bytes: Bytes, req_id: Value) -> (AuditResult, Response) {
-    let events: Vec<Result<Event, Infallible>> = if let Ok(text) = std::str::from_utf8(&bytes) {
+    let vals: Vec<Value> = if let Ok(text) = std::str::from_utf8(&bytes) {
         text.lines()
             .filter_map(|line| line.strip_prefix("data: "))
             .filter(|p| p.trim() != "[DONE]")
             .filter_map(|p| serde_json::from_str::<Value>(p).ok())
-            .filter_map(|val| Event::default().json_data(val).ok())
-            .map(Ok)
             .collect()
     } else {
         vec![]
     };
 
-    if events.is_empty() {
-        // Fall back to parse_bytes in case Content-Type was wrong
-        return parse_bytes(bytes, req_id);
+    match vals.len() {
+        0 => parse_bytes(bytes, req_id), // fall back (Content-Type may have been wrong)
+        1 => {
+            // Single response — return as JSON for widest client compatibility
+            let mut val = vals.into_iter().next().unwrap();
+            if val.get("error").is_some() {
+                val["id"] = req_id;
+            }
+            (AuditResult::Ok, Json(val).into_response())
+        }
+        _ => {
+            // Multiple responses (batched) — stream as SSE
+            let events: Vec<Result<Event, Infallible>> = vals
+                .into_iter()
+                .filter_map(|val| Event::default().json_data(val).ok())
+                .map(Ok)
+                .collect();
+            (AuditResult::Ok, Sse::new(stream::iter(events)).into_response())
+        }
     }
-
-    (AuditResult::Ok, Sse::new(stream::iter(events)).into_response())
 }
 
 async fn try_refresh(state: &Arc<ProxyState>) -> Result<String, ()> {
