@@ -45,6 +45,7 @@ pub fn create_router(
     connection_id: Uuid,
     auth:          AuthConfig,
     app:           tauri::AppHandle,
+    mcp_path:      String,
 ) -> Result<Router, AppError> {
     let client = if auth.preset.as_deref() == Some("obsidian") {
         Client::builder()
@@ -64,8 +65,9 @@ pub fn create_router(
         app,
     });
 
+    let path = mcp_path.clone();
     let router = Router::new()
-        .route("/mcp", get(handle_sse).post(handle_rpc))
+        .route(&path, get(handle_sse).post(handle_rpc))
         .with_state(state)
         .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(

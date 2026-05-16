@@ -19,6 +19,8 @@ const fsPath = document.getElementById("fs-path");
 const fsPort = document.getElementById("fs-port");
 const fsPortWarn = document.getElementById("fs-port-warning");
 const btnBrowse  = document.getElementById("btn-browse");
+const fsMcpPath  = document.getElementById("fs-mcp-path");
+const fsUseHttps = document.getElementById("fs-use-https");
 
 const rpName  = document.getElementById("rp-name");
 const rpPreset = document.getElementById("rp-preset");
@@ -28,8 +30,11 @@ const rpPort  = document.getElementById("rp-port");
 const rpPortWarn = document.getElementById("rp-port-warning");
 const rpUrlLabel   = document.getElementById("rp-url-label");
 const rpTokenLabel = document.getElementById("rp-token-label");
+const rpMcpPath  = document.getElementById("rp-mcp-path");
+const rpUseHttps = document.getElementById("rp-use-https");
 
 let selectedType = null;
+let cachedPort = null;
 
 const PRESETS = {
   obsidian: { url: "https://127.0.0.1:27123", urlLabel: "Plugin URL", tokenLabel: "Plugin API Key" },
@@ -37,9 +42,10 @@ const PRESETS = {
   custom:   { url: "",                         urlLabel: "Base URL",   tokenLabel: "API Token" },
 };
 
-export function openModal() {
+export async function openModal() {
   resetModal();
   modal.classList.add("is-active");
+  try { cachedPort = await suggestPort(null); } catch { cachedPort = 50000; }
 }
 
 function closeModal() {
@@ -51,7 +57,13 @@ function resetModal() {
   document.querySelectorAll(".type-choice-card").forEach(c => c.classList.remove("selected"));
   showStep(1);
   fsName.value = fsPath.value = "";
+  fsName.classList.remove("is-danger");
   rpName.value = rpUrl.value = rpToken.value = "";
+  rpName.classList.remove("is-danger");
+  fsMcpPath.value = "";
+  rpMcpPath.value = "";
+  fsUseHttps.checked = false;
+  rpUseHttps.checked = false;
   fsPortWarn.classList.remove("visible");
   rpPortWarn.classList.remove("visible");
   btnNext.disabled = true;
@@ -112,13 +124,15 @@ async function validatePort(input, warnEl) {
 fsPort.addEventListener("change", () => validatePort(fsPort, fsPortWarn));
 rpPort.addEventListener("change", () => validatePort(rpPort, rpPortWarn));
 
-// Pre-fill port on step 2 open
+// Pre-fill port from cached value (eagerly fetched on modal open)
 async function prefillPort(input) {
-  try {
-    const port = await suggestPort(null);
-    input.value = port;
-  } catch { input.value = 50000; }
+  input.value = cachedPort ?? 50000;
+  cachedPort = null;
 }
+
+// Clear is-danger on input for name fields
+fsName.addEventListener("input", () => fsName.classList.remove("is-danger"));
+rpName.addEventListener("input", () => rpName.classList.remove("is-danger"));
 
 // Browse folder
 btnBrowse.addEventListener("click", async () => {
@@ -129,10 +143,15 @@ btnBrowse.addEventListener("click", async () => {
 });
 
 // Nav buttons
-btnNext.addEventListener("click", () => { showStep(2); prefillPort(selectedType === "Filesystem" ? fsPort : rpPort); });
+btnNext.addEventListener("click", () => { showStep(2); prefillPort(selectedType === "Filesystem" || selectedType === "ObsidianFilesystem" ? fsPort : rpPort); });
 btnBack.addEventListener("click", () => { showStep(1); modalTitle.textContent = "Add Connection"; });
 modalClose.addEventListener("click", closeModal);
 modalBg.addEventListener("click",    closeModal);
+
+// Slug helper: turn name into /mcp/<slug>
+function toSlug(name) {
+  return "/mcp/" + name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
 
 // Create
 btnCreate.addEventListener("click", async () => {
@@ -140,9 +159,29 @@ btnCreate.addEventListener("click", async () => {
     const { createConnection } = await import("./api.js");
     let req;
     if (selectedType === "Filesystem" || selectedType === "ObsidianFilesystem") {
-      req = { name: fsName.value.trim(), connection_type: selectedType, port: parseInt(fsPort.value), root_paths: [fsPath.value], auth_config: null };
+      if (!fsName.value.trim()) { fsName.classList.add("is-danger"); fsName.focus(); return; }
+      const pathVal = fsMcpPath.value.trim() || toSlug(fsName.value.trim());
+      req = {
+        name: fsName.value.trim(),
+        connection_type: selectedType,
+        port: parseInt(fsPort.value),
+        root_paths: [fsPath.value],
+        auth_config: null,
+        mcp_path: pathVal,
+        use_https: fsUseHttps.checked,
+      };
     } else {
-      req = { name: rpName.value.trim(), connection_type: "RemoteProxy", port: parseInt(rpPort.value), root_paths: [], auth_config: { base_url: rpUrl.value.trim(), token: rpToken.value.trim(), extra_headers: {}, preset: rpPreset.value } };
+      if (!rpName.value.trim()) { rpName.classList.add("is-danger"); rpName.focus(); return; }
+      const rpPathVal = rpMcpPath.value.trim() || "/mcp";
+      req = {
+        name: rpName.value.trim(),
+        connection_type: "RemoteProxy",
+        port: parseInt(rpPort.value),
+        root_paths: [],
+        auth_config: { base_url: rpUrl.value.trim(), token: rpToken.value.trim(), extra_headers: {}, preset: rpPreset.value },
+        mcp_path: rpPathVal,
+        use_https: rpUseHttps.checked,
+      };
     }
     const conn = await createConnection(req);
     renderCard(conn);

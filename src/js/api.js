@@ -6,8 +6,8 @@ function invoke(cmd, args) {
 
 export const greet = (name) => invoke("greet", { name });
 
-// Milestone 2+ — stubs so dashboard.js can import without error
-export const listConnections  = ()       => Promise.resolve([]);
+// Milestone 2+ — real IPC calls
+export const listConnections  = ()       => invoke("list_connections", {});
 export const createConnection = (req)    => invoke("create_connection", { req });
 export const deleteConnection = (id)     => invoke("delete_connection", { id });
 export const startServer      = (id)     => invoke("start_server",      { id });

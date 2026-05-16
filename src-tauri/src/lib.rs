@@ -9,6 +9,7 @@ mod proxy_server;
 mod security;
 mod server_manager;
 mod store;
+mod tls;
 
 use std::sync::Mutex;
 

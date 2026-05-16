@@ -84,6 +84,7 @@ pub fn create_router(
     root_paths:    Vec<PathBuf>,
     connection_id: Uuid,
     app:           tauri::AppHandle,
+    mcp_path:      String,
 ) -> Router {
     let state = Arc::new(FsState {
         root_paths,
@@ -122,8 +123,9 @@ pub fn create_router(
         }
     });
 
+    let path = mcp_path.clone();
     Router::new()
-        .route("/mcp", get(handle_sse).post(handle_rpc))
+        .route(&path, get(handle_sse).post(handle_rpc))
         .with_state(state)
         .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(

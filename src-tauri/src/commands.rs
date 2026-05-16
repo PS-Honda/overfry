@@ -39,6 +39,14 @@ pub fn create_connection(
         .map_err(|e| e.to_string())?;
     s.save_port_config(&port_cfg).map_err(|e| e.to_string())?;
 
+    let raw_path = req.mcp_path.unwrap_or_else(|| "/mcp".to_string());
+    let mcp_path = if raw_path.starts_with('/') && !raw_path.contains(' ') && raw_path.len() <= 64 {
+        raw_path
+    } else {
+        "/mcp".to_string()
+    };
+    let use_https = req.use_https.unwrap_or(false);
+
     let now = Utc::now();
     let conn = Connection {
         id,
@@ -48,6 +56,8 @@ pub fn create_connection(
         root_paths:      req.root_paths,
         auth_config:     req.auth_config,
         status:          ConnectionStatus::Stopped,
+        mcp_path,
+        use_https,
         created_at:      now,
         updated_at:      now,
     };
@@ -114,15 +124,15 @@ pub async fn start_server(
 
     let router = match conn.connection_type {
         ConnectionType::Filesystem => {
-            filesystem_server::create_router(conn.root_paths.clone(), conn.id, app.clone())
+            filesystem_server::create_router(conn.root_paths.clone(), conn.id, app.clone(), conn.mcp_path.clone())
         }
         ConnectionType::ObsidianFilesystem => {
-            obsidian_fs_server::create_router(conn.root_paths.clone(), conn.id, app.clone())
+            obsidian_fs_server::create_router(conn.root_paths.clone(), conn.id, app.clone(), conn.mcp_path.clone())
         }
         ConnectionType::RemoteProxy => {
             let auth = conn.auth_config
                 .ok_or_else(|| "RemoteProxy connection missing auth_config".to_string())?;
-            proxy_server::create_router(conn.id, auth, app.clone())
+            proxy_server::create_router(conn.id, auth, app.clone(), conn.mcp_path.clone())
                 .map_err(|e| e.to_string())?
         }
     };
@@ -136,29 +146,71 @@ pub async fn start_server(
 
     let app_clone = app.clone();
     let id_clone = id.clone();
-    tauri::async_runtime::spawn(async move {
-        let result = axum::serve(listener, router)
-            .with_graceful_shutdown(async { let _ = shutdown_rx.await; })
-            .await;
+    let use_https = conn.use_https;
 
-        if let Err(e) = result {
-            tracing::error!("server {id_clone} crashed: {e}");
-            if let Some(state) = app_clone.try_state::<StoreState>() {
-                let s = state.0.lock().unwrap();
-                if let Ok(mut conns) = s.load_connections() {
-                    if let Some(c) = conns.iter_mut().find(|c| c.id.to_string() == id_clone) {
-                        c.status = ConnectionStatus::Error(e.to_string());
-                        c.updated_at = Utc::now();
+    if use_https {
+        let data_dir = app.path().app_data_dir()
+            .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?
+            .join("certs");
+        let (cert_pem, key_pem) = crate::tls::ensure_cert(&data_dir).map_err(|e| e.to_string())?;
+        let tls_config = crate::tls::make_tls_config(&cert_pem, &key_pem).map_err(|e| e.to_string())?;
+        let tls_acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config));
+
+        tauri::async_runtime::spawn(async move {
+            let mut shutdown_rx = shutdown_rx;
+            loop {
+                let (stream, _) = tokio::select! {
+                    res = listener.accept() => match res {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::error!("TLS listener accept error: {e}");
+                            break;
+                        }
+                    },
+                    _ = &mut shutdown_rx => break,
+                };
+                let acceptor = tls_acceptor.clone();
+                let tower_service = router.clone();
+                tokio::spawn(async move {
+                    if let Ok(tls_stream) = acceptor.accept(stream).await {
+                        let io = hyper_util::rt::TokioIo::new(tls_stream);
+                        let hyper_service = hyper::service::service_fn(move |req| {
+                            use tower::Service;
+                            let mut svc = tower_service.clone();
+                            async move { svc.call(req).await }
+                        });
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(io, hyper_service)
+                            .await;
                     }
-                    let _ = s.save_connections(&conns);
-                }
+                });
             }
-            let _ = app_clone.emit(
-                "connection-status-changed",
-                json!({"id": id_clone, "status": "Error", "message": e.to_string()}),
-            );
-        }
-    });
+        });
+    } else {
+        tauri::async_runtime::spawn(async move {
+            let result = axum::serve(listener, router)
+                .with_graceful_shutdown(async { let _ = shutdown_rx.await; })
+                .await;
+
+            if let Err(e) = result {
+                tracing::error!("server {id_clone} crashed: {e}");
+                if let Some(state) = app_clone.try_state::<StoreState>() {
+                    let s = state.0.lock().unwrap();
+                    if let Ok(mut conns) = s.load_connections() {
+                        if let Some(c) = conns.iter_mut().find(|c| c.id.to_string() == id_clone) {
+                            c.status = ConnectionStatus::Error(e.to_string());
+                            c.updated_at = Utc::now();
+                        }
+                        let _ = s.save_connections(&conns);
+                    }
+                }
+                let _ = app_clone.emit(
+                    "connection-status-changed",
+                    json!({"id": id_clone, "status": "Error", "message": e.to_string()}),
+                );
+            }
+        });
+    }
 
     {
         let s = store.0.lock().unwrap();

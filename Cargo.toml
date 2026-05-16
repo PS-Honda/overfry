@@ -26,3 +26,8 @@ tower-http   = { version = "0.6", features = ["trace", "cors", "limit", "timeout
 gray_matter  = "0.2"
 pulldown-cmark = "0.11"
 serde_yaml   = "0.9"
+rcgen          = "0.13"
+tokio-rustls   = { version = "0.26", features = ["ring"] }
+rustls-pemfile = "2"
+hyper          = { version = "1", features = ["http1", "server"] }
+hyper-util     = { version = "0.1", features = ["tokio"] }

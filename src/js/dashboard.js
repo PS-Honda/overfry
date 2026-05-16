@@ -46,10 +46,13 @@ function updateCard(card, conn) {
   STATUS_CLASSES.forEach(c => dot.classList.remove(c));
   dot.classList.add(sc);
 
-  card.querySelector(".connection-name").textContent = conn.name;
+  const displayName = conn.name && conn.name.trim() ? conn.name : conn.connection_type;
+  card.querySelector(".connection-name").textContent = displayName;
   card.querySelector(".type-badge").textContent = TYPE_LABELS[conn.connection_type] ?? conn.connection_type;
 
-  const url = `http://127.0.0.1:${conn.port}/mcp`;
+  const scheme = conn.use_https ? "https" : "http";
+  const mcpPath = conn.mcp_path || "/mcp";
+  const url = `${scheme}://127.0.0.1:${conn.port}${mcpPath}`;
   card.querySelector(".url-display").textContent = sc === "running" ? url : `Port ${conn.port} — stopped`;
 
   const paths = conn.root_paths ?? [];
@@ -97,7 +100,9 @@ async function onDelete(id) {
 }
 
 function onCopyUrl(conn) {
-  const url = `http://127.0.0.1:${conn.port}/mcp`;
+  const scheme = conn.use_https ? "https" : "http";
+  const mcpPath = conn.mcp_path || "/mcp";
+  const url = `${scheme}://127.0.0.1:${conn.port}${mcpPath}`;
   navigator.clipboard.writeText(url).then(() => {
     const btn = document.querySelector(`[data-connection-id="${conn.id}"] .copy-url-btn`);
     if (btn) { btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = "Copy URL"; }, 1500); }

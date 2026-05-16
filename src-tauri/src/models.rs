@@ -52,6 +52,8 @@ pub struct Connection {
     pub root_paths:      Vec<PathBuf>,
     pub auth_config:     Option<AuthConfig>,
     pub status:          ConnectionStatus,
+    pub mcp_path:        String,
+    pub use_https:       bool,
     pub created_at:      DateTime<Utc>,
     pub updated_at:      DateTime<Utc>,
 }
@@ -110,6 +112,8 @@ pub struct ConnectionView {
     pub root_paths:      Vec<PathBuf>,
     pub status:          ConnectionStatus,
     pub auth_config:     Option<AuthConfigView>,
+    pub mcp_path:        String,
+    pub use_https:       bool,
     pub created_at:      DateTime<Utc>,
     pub updated_at:      DateTime<Utc>,
 }
@@ -127,6 +131,8 @@ impl From<Connection> for ConnectionView {
                 base_url: a.base_url,
                 preset:   a.preset,
             }),
+            mcp_path:        c.mcp_path,
+            use_https:       c.use_https,
             created_at:      c.created_at,
             updated_at:      c.updated_at,
         }
@@ -157,6 +163,8 @@ mod tests {
                 extra_headers: HashMap::new(),
                 preset:        None,
             }),
+            mcp_path:        "/mcp".to_string(),
+            use_https:       false,
             created_at:      now(),
             updated_at:      now(),
         };
@@ -183,6 +191,8 @@ mod tests {
             root_paths:      vec![std::path::PathBuf::from("/tmp/vault")],
             status:          ConnectionStatus::Running,
             auth_config:     None,
+            mcp_path:        "/mcp".to_string(),
+            use_https:       false,
             created_at:      now(),
             updated_at:      now(),
         };
@@ -214,4 +224,6 @@ pub struct CreateConnectionRequest {
     pub port:            Option<u16>,
     pub root_paths:      Vec<PathBuf>,
     pub auth_config:     Option<AuthConfig>,
+    pub mcp_path:        Option<String>,
+    pub use_https:       Option<bool>,
 }
