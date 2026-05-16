@@ -193,9 +193,9 @@ html, body {
 .root-path-row { display: none; }
 .root-path-row.has-value { display: flex; }
 
-/* Right action panel — 50% */
+/* Right action panel — 20% */
 .card-action {
-  flex: 0 0 50%;
+  flex: 0 0 20%;
   display: flex;
   align-items: stretch;
 }

@@ -7,7 +7,8 @@ use crate::{
     audit::AuditState,
     error::AppError,
     filesystem_server,
-    models::{AuditEntry, Connection, ConnectionStatus, ConnectionType, ConnectionView, CreateConnectionRequest},
+    models::{AuditEntry, AuthMethod, Connection, ConnectionStatus, ConnectionType, ConnectionView, CreateConnectionRequest},
+    oauth,
     obsidian_fs_server,
     port_manager,
     proxy_server,
@@ -262,6 +263,60 @@ pub async fn pick_folder(app: AppHandle) -> CmdResult<Option<String>> {
     use tauri_plugin_dialog::DialogExt;
     let path = app.dialog().file().blocking_pick_folder();
     Ok(path.map(|p| p.to_string()))
+}
+
+// ── OAuth flow ─────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn start_oauth_flow(
+    app:   AppHandle,
+    store: State<'_, StoreState>,
+    connection_id: String,
+) -> CmdResult<()> {
+    let conn = {
+        let s = store.0.lock().unwrap();
+        s.load_connections()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|c| c.id.to_string() == connection_id)
+            .ok_or_else(|| AppError::ConnectionNotFound.to_string())?
+    };
+
+    let auth = conn.auth_config
+        .ok_or("Connection has no auth_config")?;
+
+    if auth.auth_method != AuthMethod::OAuth {
+        return Err("Connection is not using OAuth auth method".to_string());
+    }
+
+    let params = oauth::OAuthParams {
+        auth_url:      &auth.oauth_auth_url,
+        token_url:     &auth.oauth_token_url,
+        client_id:     &auth.client_id,
+        client_secret: &auth.client_secret,
+        scopes:        &auth.oauth_scopes,
+    };
+
+    let (access_token, refresh_token) = oauth::run_oauth_flow(params)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Persist tokens
+    {
+        let s = store.0.lock().unwrap();
+        let mut conns = s.load_connections().map_err(|e| e.to_string())?;
+        if let Some(c) = conns.iter_mut().find(|c| c.id.to_string() == connection_id) {
+            if let Some(ref mut a) = c.auth_config {
+                a.access_token  = access_token;
+                a.refresh_token = refresh_token;
+            }
+            c.updated_at = Utc::now();
+        }
+        s.save_connections(&conns).map_err(|e| e.to_string())?;
+    }
+
+    let _ = app.emit("oauth-complete", serde_json::json!({ "id": connection_id, "success": true }));
+    Ok(())
 }
 
 // ── Audit log ─────────────────────────────────────────────────────────────────

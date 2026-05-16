@@ -1,4 +1,4 @@
-import { listConnections, startServer, stopServer, deleteConnection } from "./api.js";
+import { listConnections, startServer, stopServer, deleteConnection, startOAuthFlow } from "./api.js";
 
 const dashboard = document.getElementById("dashboard");
 const emptyState = document.getElementById("empty-state");
@@ -75,6 +75,13 @@ function updateCard(card, conn) {
   if (startBtn) startBtn.style.display = sc === "running" ? "none" : "";
   if (stopBtn)  stopBtn.style.display  = sc === "running" ? "" : "none";
 
+  // Authorize button — only for OAuth connections that haven't been authorized yet
+  const oauthRow = card.querySelector(".oauth-authorize-row");
+  if (oauthRow) {
+    const needsAuth = conn.auth_config?.auth_method === "oauth" && !conn.auth_config?.is_authorized;
+    oauthRow.style.display = needsAuth ? "" : "none";
+  }
+
   refreshCount();
 }
 
@@ -119,6 +126,19 @@ export function renderCard(conn) {
     const scheme = c.use_https ? "https" : "http";
     const url = `${scheme}://127.0.0.1:${c.port}${c.mcp_path || "/mcp"}`;
     navigator.clipboard.writeText(url).catch(() => {});
+  });
+
+  card.querySelector(".oauth-authorize-btn")?.addEventListener("click", async () => {
+    const c = card._conn ?? conn;
+    try {
+      await startOAuthFlow(c.id);
+      // Re-fetch this connection so the Authorize button hides
+      const all = await listConnections();
+      const updated = all.find(x => x.id === c.id);
+      if (updated) renderCard(updated);
+    } catch (e) {
+      alert(`OAuth authorization failed: ${e}`);
+    }
   });
 
   emptyState.style.display = "none";

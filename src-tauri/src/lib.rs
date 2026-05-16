@@ -3,6 +3,7 @@ mod commands;
 mod error;
 mod filesystem_server;
 mod models;
+mod oauth;
 mod obsidian_fs_server;
 mod port_manager;
 mod proxy_server;
@@ -93,6 +94,7 @@ pub fn run() {
             get_server_status,
             pick_folder,
             get_audit_log,
+            start_oauth_flow,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

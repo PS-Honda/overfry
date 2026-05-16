@@ -32,14 +32,26 @@ const rpUrlLabel   = document.getElementById("rp-url-label");
 const rpTokenLabel = document.getElementById("rp-token-label");
 const rpMcpPath  = document.getElementById("rp-mcp-path");
 const rpUseHttps = document.getElementById("rp-use-https");
+const rpAuthToken  = document.getElementById("rp-auth-token");
+const rpAuthOAuth  = document.getElementById("rp-auth-oauth");
+const rpTokenSection = document.getElementById("rp-token-section");
+const rpOAuthSection = document.getElementById("rp-oauth-section");
+const rpClientId     = document.getElementById("rp-client-id");
+const rpClientSecret = document.getElementById("rp-client-secret");
+const rpOAuthAuthUrl  = document.getElementById("rp-oauth-auth-url");
+const rpOAuthTokenUrl = document.getElementById("rp-oauth-token-url");
+const rpOAuthScopes   = document.getElementById("rp-oauth-scopes");
 
 let selectedType = null;
 let cachedPort = null;
 
 const PRESETS = {
-  obsidian: { url: "https://127.0.0.1:27123", urlLabel: "Plugin URL", tokenLabel: "Plugin API Key" },
-  outline:  { url: "",                         urlLabel: "Base URL",   tokenLabel: "API Token" },
-  custom:   { url: "",                         urlLabel: "Base URL",   tokenLabel: "API Token" },
+  obsidian: { url: "https://127.0.0.1:27123", urlLabel: "Plugin URL",     tokenLabel: "Plugin API Key", authMethod: "token" },
+  outline:  { url: "",                         urlLabel: "Base URL",       tokenLabel: "API Token",      authMethod: "token" },
+  notion:   { url: "https://api.notion.com",   urlLabel: "API Base URL",   tokenLabel: "",               authMethod: "oauth",
+              oauthAuthUrl: "https://api.notion.com/v1/oauth/authorize",
+              oauthTokenUrl: "https://api.notion.com/v1/oauth/token" },
+  custom:   { url: "",                         urlLabel: "Base URL",       tokenLabel: "API Token",      authMethod: "token" },
 };
 
 export async function openModal() {
@@ -67,6 +79,11 @@ function resetModal() {
   fsPortWarn.classList.remove("visible");
   rpPortWarn.classList.remove("visible");
   btnNext.disabled = true;
+  // Reset OAuth fields
+  rpAuthToken.checked = true;
+  rpClientId.value = rpClientSecret.value = rpOAuthAuthUrl.value = rpOAuthTokenUrl.value = rpOAuthScopes.value = "";
+  rpTokenSection.style.display = "";
+  rpOAuthSection.style.display = "none";
 }
 
 function showStep(n) {
@@ -95,14 +112,31 @@ document.querySelectorAll(".type-choice-card").forEach(card => {
   });
 });
 
+// Auth method radio toggle
+function setAuthMethod(method) {
+  rpTokenSection.style.display = method === "token" ? "" : "none";
+  rpOAuthSection.style.display = method === "oauth" ? "" : "none";
+}
+rpAuthToken.addEventListener("change", () => setAuthMethod("token"));
+rpAuthOAuth.addEventListener("change", () => setAuthMethod("oauth"));
+
 // Preset change
 rpPreset.addEventListener("change", () => {
   const p = PRESETS[rpPreset.value] ?? PRESETS.custom;
-  rpUrl.value = p.url;
+  rpUrl.value              = p.url;
   rpUrlLabel.textContent   = p.urlLabel;
-  rpTokenLabel.textContent = p.tokenLabel;
-  if (rpPreset.value === "obsidian") rpUrl.readOnly = true;
-  else rpUrl.readOnly = false;
+  rpTokenLabel.textContent = p.tokenLabel ?? "API Token";
+  rpUrl.readOnly = (rpPreset.value === "obsidian");
+
+  // Set auth method from preset
+  const method = p.authMethod ?? "token";
+  rpAuthToken.checked = method === "token";
+  rpAuthOAuth.checked = method === "oauth";
+  setAuthMethod(method);
+
+  // Pre-fill OAuth URLs if preset provides them
+  if (p.oauthAuthUrl)  rpOAuthAuthUrl.value  = p.oauthAuthUrl;
+  if (p.oauthTokenUrl) rpOAuthTokenUrl.value = p.oauthTokenUrl;
 });
 
 // Port validation
@@ -173,13 +207,27 @@ btnCreate.addEventListener("click", async () => {
     } else {
       if (!rpName.value.trim()) { rpName.classList.add("is-danger"); rpName.focus(); return; }
       const rpPathVal = rpMcpPath.value.trim() || "/mcp";
+      const isOAuth = rpAuthOAuth.checked;
       req = {
         name: rpName.value.trim(),
         connection_type: "RemoteProxy",
         port: parseInt(rpPort.value),
         root_paths: [],
-        auth_config: { base_url: rpUrl.value.trim(), token: rpToken.value.trim(), extra_headers: {}, preset: rpPreset.value },
-        mcp_path: rpPathVal,
+        auth_config: {
+          base_url:       rpUrl.value.trim(),
+          token:          isOAuth ? "" : rpToken.value.trim(),
+          extra_headers:  {},
+          preset:         rpPreset.value,
+          auth_method:    isOAuth ? "oauth" : "token",
+          client_id:      isOAuth ? rpClientId.value.trim() : "",
+          client_secret:  isOAuth ? rpClientSecret.value.trim() : "",
+          oauth_auth_url:  isOAuth ? rpOAuthAuthUrl.value.trim() : "",
+          oauth_token_url: isOAuth ? rpOAuthTokenUrl.value.trim() : "",
+          oauth_scopes:   isOAuth ? rpOAuthScopes.value.trim() : "",
+          access_token:   "",
+          refresh_token:  "",
+        },
+        mcp_path:  rpPathVal,
         use_https: rpUseHttps.checked,
       };
     }

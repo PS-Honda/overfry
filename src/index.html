@@ -150,6 +150,7 @@
                 <option value="custom">Custom</option>
                 <option value="outline">Outline</option>
                 <option value="obsidian">Obsidian Local REST API</option>
+                <option value="notion">Notion (OAuth)</option>
               </select>
             </div>
           </div>
@@ -160,12 +161,65 @@
             <input id="rp-url" class="input is-small" type="text" placeholder="https://your-outline.com">
           </div>
         </div>
+
+        <!-- Auth method toggle -->
         <div class="field">
-          <label class="label is-small" id="rp-token-label">API Token</label>
-          <div class="control">
-            <input id="rp-token" class="input is-small" type="password" placeholder="••••••••">
+          <label class="label is-small">Auth Method</label>
+          <div class="control" style="display:flex;gap:1.2rem;">
+            <label class="is-small" style="cursor:pointer;">
+              <input type="radio" name="rp-auth-method" id="rp-auth-token" value="token" checked> API Token
+            </label>
+            <label class="is-small" style="cursor:pointer;">
+              <input type="radio" name="rp-auth-method" id="rp-auth-oauth" value="oauth"> OAuth
+            </label>
           </div>
         </div>
+
+        <!-- Token section -->
+        <div id="rp-token-section">
+          <div class="field">
+            <label class="label is-small" id="rp-token-label">API Token</label>
+            <div class="control">
+              <input id="rp-token" class="input is-small" type="password" placeholder="••••••••">
+            </div>
+          </div>
+        </div>
+
+        <!-- OAuth section -->
+        <div id="rp-oauth-section" style="display:none;">
+          <div class="field">
+            <label class="label is-small">Client ID</label>
+            <div class="control">
+              <input id="rp-client-id" class="input is-small" type="text" placeholder="your-client-id">
+            </div>
+          </div>
+          <div class="field">
+            <label class="label is-small">Client Secret</label>
+            <div class="control">
+              <input id="rp-client-secret" class="input is-small" type="password" placeholder="••••••••">
+            </div>
+          </div>
+          <div class="field">
+            <label class="label is-small">Authorization URL</label>
+            <div class="control">
+              <input id="rp-oauth-auth-url" class="input is-small" type="text" placeholder="https://...">
+            </div>
+          </div>
+          <div class="field">
+            <label class="label is-small">Token URL</label>
+            <div class="control">
+              <input id="rp-oauth-token-url" class="input is-small" type="text" placeholder="https://...">
+            </div>
+          </div>
+          <div class="field">
+            <label class="label is-small">Scopes</label>
+            <div class="control">
+              <input id="rp-oauth-scopes" class="input is-small" type="text" placeholder="read write">
+            </div>
+          </div>
+          <p class="help has-text-grey">After creating the connection, click <strong>Authorize</strong> on the card to complete the OAuth flow.</p>
+        </div>
+
         <div class="field">
           <label class="label is-small">Port</label>
           <div class="control">
@@ -226,7 +280,11 @@
         </div>
         <!-- Copy URL sits in body bottom -->
         <div class="card-row" style="margin-top:6px;">
-          <button class="copy-url-btn button is-info is-small is-light" style="font-size:0.7rem;">Copy URL</button>
+          <button class="copy-url-btn button is-info is-small is-light" style="width:100%;font-size:0.7rem;">Copy URL</button>
+        </div>
+        <!-- Authorize button — only shown for unauthed OAuth connections -->
+        <div class="card-row oauth-authorize-row" style="display:none;">
+          <button class="oauth-authorize-btn button is-warning is-small is-light" style="width:100%;font-size:0.7rem;">🔑 Authorize</button>
         </div>
       </div>
 

@@ -49,6 +49,10 @@ rustls-pemfile     = { workspace = true }
 rustls             = { version = "0.23", features = ["ring"] }
 hyper              = { workspace = true }
 hyper-util         = { workspace = true }
+rand               = { workspace = true }
+sha2               = { workspace = true }
+base64             = { workspace = true }
+open               = { workspace = true }
 
 [profile.release]
 opt-level     = 3

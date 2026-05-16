@@ -15,3 +15,4 @@ export const stopServer       = (id)     => invoke("stop_server",       { id });
 export const suggestPort      = (port)   => invoke("suggest_port",      { requested: port ?? null });
 export const pickFolder       = ()       => invoke("pick_folder");
 export const getAuditLog      = (limit)  => invoke("get_audit_log",     { limit: limit ?? 50 });
+export const startOAuthFlow   = (id)     => invoke("start_oauth_flow",  { connectionId: id });

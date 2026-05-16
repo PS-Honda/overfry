@@ -30,15 +30,51 @@ impl Default for ConnectionStatus {
     fn default() -> Self { Self::Stopped }
 }
 
+// ── Auth method ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum AuthMethod {
+    #[default]
+    #[serde(rename = "token")]
+    Token,
+    #[serde(rename = "oauth")]
+    OAuth,
+}
+
 // ── Auth config ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
-    pub base_url:      String,
-    pub token:         String,
-    pub extra_headers: HashMap<String, String>,
-    /// "outline" | "obsidian" | "custom"
-    pub preset:        Option<String>,
+    pub base_url:         String,
+    #[serde(default)]
+    pub token:            String,
+    #[serde(default)]
+    pub extra_headers:    HashMap<String, String>,
+    /// "outline" | "obsidian" | "notion" | "custom"
+    #[serde(default)]
+    pub preset:           Option<String>,
+
+    // Auth method (defaults to Token for backward compat)
+    #[serde(default)]
+    pub auth_method:      AuthMethod,
+
+    // OAuth fields — only used when auth_method = OAuth
+    #[serde(default)]
+    pub client_id:        String,
+    #[serde(default)]
+    pub client_secret:    String,
+    #[serde(default)]
+    pub oauth_auth_url:   String,
+    #[serde(default)]
+    pub oauth_token_url:  String,
+    #[serde(default)]
+    pub oauth_scopes:     String,
+
+    // Stored after OAuth flow completes
+    #[serde(default)]
+    pub access_token:     String,
+    #[serde(default)]
+    pub refresh_token:    String,
 }
 
 // ── Connection ─────────────────────────────────────────────────────────────────
@@ -52,11 +88,15 @@ pub struct Connection {
     pub root_paths:      Vec<PathBuf>,
     pub auth_config:     Option<AuthConfig>,
     pub status:          ConnectionStatus,
+    #[serde(default = "default_mcp_path")]
     pub mcp_path:        String,
+    #[serde(default)]
     pub use_https:       bool,
     pub created_at:      DateTime<Utc>,
     pub updated_at:      DateTime<Utc>,
 }
+
+fn default_mcp_path() -> String { "/mcp".to_string() }
 
 // ── Port config ────────────────────────────────────────────────────────────────
 
@@ -98,9 +138,11 @@ pub struct AuditEntry {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AuthConfigView {
-    pub base_url: String,
-    pub preset:   Option<String>,
-    // token intentionally omitted
+    pub base_url:     String,
+    pub preset:       Option<String>,
+    pub auth_method:  AuthMethod,
+    pub is_authorized: bool,   // true if access_token is present
+    // token / client_secret / access_token intentionally omitted
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,8 +170,10 @@ impl From<Connection> for ConnectionView {
             root_paths:      c.root_paths,
             status:          c.status,
             auth_config:     c.auth_config.map(|a| AuthConfigView {
-                base_url: a.base_url,
-                preset:   a.preset,
+                base_url:      a.base_url,
+                preset:        a.preset,
+                auth_method:   a.auth_method,
+                is_authorized: !a.access_token.is_empty(),
             }),
             mcp_path:        c.mcp_path,
             use_https:       c.use_https,
@@ -162,6 +206,14 @@ mod tests {
                 token:         "super-secret-token".to_string(),
                 extra_headers: HashMap::new(),
                 preset:        None,
+                auth_method:   AuthMethod::Token,
+                client_id:     String::new(),
+                client_secret: String::new(),
+                oauth_auth_url:  String::new(),
+                oauth_token_url: String::new(),
+                oauth_scopes:  String::new(),
+                access_token:  String::new(),
+                refresh_token: String::new(),
             }),
             mcp_path:        "/mcp".to_string(),
             use_https:       false,
@@ -206,11 +258,14 @@ mod tests {
     fn connection_view_auth_config_view_has_no_token_field() {
         // Verify AuthConfigView serialization never includes a "token" key at all
         let auth_view = AuthConfigView {
-            base_url: "https://outline.example.com".to_string(),
-            preset:   Some("outline".to_string()),
+            base_url:      "https://outline.example.com".to_string(),
+            preset:        Some("outline".to_string()),
+            auth_method:   AuthMethod::Token,
+            is_authorized: false,
         };
         let json = serde_json::to_string(&auth_view).unwrap();
-        assert!(!json.contains("token"), "AuthConfigView must have no token field: {json}");
+        // Must not have a "token" key — auth_method value "token" is acceptable
+        assert!(!json.contains("\"token\":"), "AuthConfigView must have no token field: {json}");
         assert!(json.contains("outline.example.com"));
     }
 }

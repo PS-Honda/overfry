@@ -31,3 +31,7 @@ tokio-rustls   = { version = "0.26", features = ["ring"] }
 rustls-pemfile = "2"
 hyper          = { version = "1", features = ["http1", "server"] }
 hyper-util     = { version = "0.1", features = ["tokio"] }
+rand           = "0.8"
+sha2           = "0.10"
+base64         = "0.22"
+open           = "5"
