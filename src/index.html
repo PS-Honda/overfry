@@ -199,35 +199,43 @@
 <template id="tmpl-connection-card">
   <div class="connection-card" data-connection-id="">
 
-    <!-- Header -->
-    <div class="card-header">
-      <span class="status-dot stopped"></span>
-      <span class="connection-name"></span>
-      <span class="tag type-badge is-small"></span>
-      <button class="delete-btn icon-btn" title="Delete">✕</button>
+    <!-- Left: info panel -->
+    <div class="card-left">
+
+      <!-- Header -->
+      <div class="card-header">
+        <span class="status-dot stopped"></span>
+        <span class="connection-name"></span>
+        <span class="tag type-badge is-small"></span>
+        <button class="delete-btn icon-btn" title="Delete">✕</button>
+      </div>
+
+      <!-- Body -->
+      <div class="card-body">
+        <div class="card-row">
+          <span class="row-label">Endpoint</span>
+          <span class="url-display mono"></span>
+        </div>
+        <div class="card-row">
+          <span class="row-label">Port</span>
+          <span class="port-display mono"></span>
+        </div>
+        <div class="card-row root-path-row">
+          <span class="row-label">Root</span>
+          <span class="root-path-display mono"></span>
+        </div>
+        <!-- Copy URL sits in body bottom -->
+        <div class="card-row" style="margin-top:6px;">
+          <button class="copy-url-btn button is-info is-small is-light" style="font-size:0.7rem;">Copy URL</button>
+        </div>
+      </div>
+
     </div>
 
-    <!-- Body -->
-    <div class="card-body">
-      <div class="card-row">
-        <span class="row-label">Endpoint</span>
-        <span class="url-display mono"></span>
-      </div>
-      <div class="card-row">
-        <span class="row-label">Port</span>
-        <span class="port-display mono"></span>
-      </div>
-      <div class="card-row root-path-row">
-        <span class="row-label">Root</span>
-        <span class="root-path-display mono"></span>
-      </div>
-    </div>
-
-    <!-- Footer -->
-    <div class="card-footer">
-      <button class="start-btn button is-success is-small is-light">▶ Start</button>
-      <button class="stop-btn button is-warning is-small is-light" style="display:none;">■ Stop</button>
-      <button class="copy-url-btn button is-info is-small is-light">Copy URL</button>
+    <!-- Right: start/stop action panel (50%) -->
+    <div class="card-action">
+      <button class="start-btn">▶<br>Start</button>
+      <button class="stop-btn" style="display:none;">■<br>Stop</button>
     </div>
 
   </div>
