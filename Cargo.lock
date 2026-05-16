@@ -2712,6 +2712,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest 0.12.28",
+ "rustls",
  "rustls-pemfile",
  "serde",
  "serde_json",

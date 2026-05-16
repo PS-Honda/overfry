@@ -70,13 +70,13 @@ pub fn create_connection(
 }
 
 #[tauri::command]
-pub fn delete_connection(
-    store: State<StoreState>,
-    server_mgr: State<ServerManager>,
+pub async fn delete_connection(
+    store: State<'_, StoreState>,
+    server_mgr: State<'_, ServerManager>,
     id: String,
 ) -> CmdResult<()> {
     // Stop server if running (ignore error — may already be stopped)
-    let _ = server_mgr.shutdown(&id);
+    let _ = server_mgr.shutdown(&id).await;
 
     let s = store.0.lock().unwrap();
 
@@ -142,13 +142,12 @@ pub async fn start_server(
         .map_err(|e| format!("bind {addr}: {e}"))?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    server_mgr.register(&id, shutdown_tx).map_err(|e| e.to_string())?;
 
     let app_clone = app.clone();
     let id_clone = id.clone();
     let use_https = conn.use_https;
 
-    if use_https {
+    let join_handle = if use_https {
         let data_dir = app.path().app_data_dir()
             .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?
             .join("certs");
@@ -185,7 +184,7 @@ pub async fn start_server(
                     }
                 });
             }
-        });
+        })
     } else {
         tauri::async_runtime::spawn(async move {
             let result = axum::serve(listener, router)
@@ -209,8 +208,10 @@ pub async fn start_server(
                     json!({"id": id_clone, "status": "Error", "message": e.to_string()}),
                 );
             }
-        });
-    }
+        })
+    };
+
+    server_mgr.register(id.to_string(), shutdown_tx, join_handle).map_err(|e| e.to_string())?;
 
     {
         let s = store.0.lock().unwrap();
@@ -233,7 +234,7 @@ pub async fn stop_server(
     server_mgr: State<'_, ServerManager>,
     id: String,
 ) -> CmdResult<()> {
-    server_mgr.shutdown(&id).map_err(|e| e.to_string())?;
+    server_mgr.shutdown(&id).await.map_err(|e| e.to_string())?;
 
     {
         let s = store.0.lock().unwrap();

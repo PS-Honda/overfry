@@ -197,24 +197,39 @@
 
 <!-- ── Card template ──────────────────────────────────────────── -->
 <template id="tmpl-connection-card">
-  <div class="card connection-card" data-connection-id="">
-    <div class="card-content py-3 px-4">
-      <div class="is-flex is-align-items-center is-justify-content-space-between">
-        <div class="is-flex is-align-items-center" style="gap:8px; min-width:0;">
-          <span class="status-dot stopped"></span>
-          <span class="connection-name has-text-weight-semibold" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></span>
-          <span class="tag is-light is-small type-badge ml-1"></span>
-        </div>
-        <div class="is-flex" style="gap:6px; flex-shrink:0;">
-          <button class="button is-small is-success is-light start-btn">Start</button>
-          <button class="button is-small is-warning is-light stop-btn" style="display:none;">Stop</button>
-          <button class="button is-small is-info is-light copy-url-btn" title="Copy MCP URL">Copy URL</button>
-          <button class="button is-small is-danger is-light delete-btn" title="Delete">✕</button>
-        </div>
-      </div>
-      <p class="url-display mt-2"></p>
-      <p class="help root-path-display has-text-grey-light mt-1"></p>
+  <div class="connection-card" data-connection-id="">
+
+    <!-- Header -->
+    <div class="card-header">
+      <span class="status-dot stopped"></span>
+      <span class="connection-name"></span>
+      <span class="tag type-badge is-small"></span>
+      <button class="delete-btn icon-btn" title="Delete">✕</button>
     </div>
+
+    <!-- Body -->
+    <div class="card-body">
+      <div class="card-row">
+        <span class="row-label">Endpoint</span>
+        <span class="url-display mono"></span>
+      </div>
+      <div class="card-row">
+        <span class="row-label">Port</span>
+        <span class="port-display mono"></span>
+      </div>
+      <div class="card-row root-path-row">
+        <span class="row-label">Root</span>
+        <span class="root-path-display mono"></span>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="card-footer">
+      <button class="start-btn button is-success is-small is-light">▶ Start</button>
+      <button class="stop-btn button is-warning is-small is-light" style="display:none;">■ Stop</button>
+      <button class="copy-url-btn button is-info is-small is-light">Copy URL</button>
+    </div>
+
   </div>
 </template>
 

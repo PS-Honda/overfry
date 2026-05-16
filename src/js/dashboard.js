@@ -1,22 +1,81 @@
 import { listConnections, startServer, stopServer, deleteConnection } from "./api.js";
 
-const dashboard   = document.getElementById("dashboard");
-const emptyState  = document.getElementById("empty-state");
-const countBadge  = document.getElementById("connection-count");
-const tmpl        = document.getElementById("tmpl-connection-card");
+const dashboard = document.getElementById("dashboard");
+const emptyState = document.getElementById("empty-state");
+const connectionCount = document.getElementById("connection-count");
+const tmpl = document.getElementById("tmpl-connection-card");
 
 const TYPE_LABELS = {
-  Filesystem:         "Filesystem",
+  Filesystem: "Folder",
   ObsidianFilesystem: "Obsidian Vault",
-  RemoteProxy:        "Remote API",
+  RemoteProxy: "Remote API",
 };
 
-const STATUS_CLASSES = ["running", "starting", "error", "stopped"];
+const STATUS_CLASSES = ["stopped", "running", "starting", "error"];
 
 function statusClass(status) {
   if (!status) return "stopped";
   if (typeof status === "string") return status.toLowerCase();
   return Object.keys(status)[0].toLowerCase();
+}
+
+function refreshCount() {
+  const running = document.querySelectorAll(".connection-card.running").length;
+  connectionCount.textContent = `${running} active`;
+  connectionCount.className = `tag ${running > 0 ? "is-success" : "is-light"}`;
+}
+
+function updateCard(card, conn) {
+  card._conn = conn;
+
+  const sc = statusClass(conn.status);
+
+  // Card border class
+  STATUS_CLASSES.forEach(c => card.classList.remove(c));
+  card.classList.add(sc);
+
+  // Status dot
+  const dot = card.querySelector(".status-dot");
+  if (dot) {
+    STATUS_CLASSES.forEach(c => dot.classList.remove(c));
+    dot.classList.add(sc);
+  }
+
+  // Name + badge
+  const displayName = (conn.name && conn.name.trim()) ? conn.name : (conn.connection_type ?? "Connection");
+  const nameEl = card.querySelector(".connection-name");
+  if (nameEl) nameEl.textContent = displayName;
+
+  const badgeEl = card.querySelector(".type-badge");
+  if (badgeEl) badgeEl.textContent = TYPE_LABELS[conn.connection_type] ?? (conn.connection_type ?? "");
+
+  // URL
+  const scheme = conn.use_https ? "https" : "http";
+  const mcpPath = conn.mcp_path || "/mcp";
+  const url = `${scheme}://127.0.0.1:${conn.port}${mcpPath}`;
+  const urlEl = card.querySelector(".url-display");
+  if (urlEl) urlEl.textContent = sc === "running" ? url : "";
+
+  // Port
+  const portEl = card.querySelector(".port-display");
+  if (portEl) portEl.textContent = conn.port ?? "";
+
+  // Root path / base URL
+  const rootRow = card.querySelector(".root-path-row");
+  const rootEl  = card.querySelector(".root-path-display");
+  const rootVal = (conn.root_paths && conn.root_paths.length)
+    ? conn.root_paths[0]
+    : (conn.auth_config?.base_url ?? "");
+  if (rootEl) rootEl.textContent = rootVal;
+  if (rootRow) rootRow.classList.toggle("has-value", !!rootVal);
+
+  // Start / stop buttons
+  const startBtn = card.querySelector(".start-btn");
+  const stopBtn  = card.querySelector(".stop-btn");
+  if (startBtn) startBtn.style.display = sc === "running" ? "none" : "";
+  if (stopBtn)  stopBtn.style.display  = sc === "running" ? "" : "none";
+
+  refreshCount();
 }
 
 export function renderCard(conn) {
@@ -27,41 +86,44 @@ export function renderCard(conn) {
   card.dataset.connectionId = conn.id;
   updateCard(card, conn);
 
-  card.querySelector(".start-btn").addEventListener("click",  () => onStart(conn.id));
-  card.querySelector(".stop-btn").addEventListener("click",   () => onStop(conn.id));
-  card.querySelector(".delete-btn").addEventListener("click", () => onDelete(conn.id));
-  card.querySelector(".copy-url-btn").addEventListener("click", () => onCopyUrl(conn));
+  card.querySelector(".start-btn").addEventListener("click", async () => {
+    try {
+      await startServer(conn.id);
+    } catch (e) {
+      alert(`Failed to start: ${e}`);
+    }
+  });
+
+  card.querySelector(".stop-btn").addEventListener("click", async () => {
+    try {
+      await stopServer(conn.id);
+    } catch (e) {
+      alert(`Failed to stop: ${e}`);
+    }
+  });
+
+  card.querySelector(".delete-btn").addEventListener("click", async () => {
+    if (!confirm(`Delete "${conn.name}"?`)) return;
+    try {
+      await deleteConnection(conn.id);
+      card.remove();
+      if (!document.querySelector(".connection-card")) emptyState.style.display = "";
+      refreshCount();
+    } catch (e) {
+      alert(`Failed to delete: ${e}`);
+    }
+  });
+
+  card.querySelector(".copy-url-btn").addEventListener("click", () => {
+    const c = card._conn ?? conn;
+    const scheme = c.use_https ? "https" : "http";
+    const url = `${scheme}://127.0.0.1:${c.port}${c.mcp_path || "/mcp"}`;
+    navigator.clipboard.writeText(url).catch(() => {});
+  });
 
   emptyState.style.display = "none";
   dashboard.appendChild(card);
   refreshCount();
-}
-
-function updateCard(card, conn) {
-  const sc = statusClass(conn.status);
-  STATUS_CLASSES.forEach(c => card.classList.remove(c));
-  card.classList.add(sc);
-
-  const dot = card.querySelector(".status-dot");
-  STATUS_CLASSES.forEach(c => dot.classList.remove(c));
-  dot.classList.add(sc);
-
-  const displayName = conn.name && conn.name.trim() ? conn.name : conn.connection_type;
-  card.querySelector(".connection-name").textContent = displayName;
-  card.querySelector(".type-badge").textContent = TYPE_LABELS[conn.connection_type] ?? conn.connection_type;
-
-  const scheme = conn.use_https ? "https" : "http";
-  const mcpPath = conn.mcp_path || "/mcp";
-  const url = `${scheme}://127.0.0.1:${conn.port}${mcpPath}`;
-  card.querySelector(".url-display").textContent = sc === "running" ? url : `Port ${conn.port} — stopped`;
-
-  const paths = conn.root_paths ?? [];
-  card.querySelector(".root-path-display").textContent = paths.length ? paths[0] : (conn.auth_config?.base_url ?? "");
-
-  const startBtn = card.querySelector(".start-btn");
-  const stopBtn  = card.querySelector(".stop-btn");
-  startBtn.style.display = sc === "running" ? "none" : "";
-  stopBtn.style.display  = sc === "running" ? "" : "none";
 }
 
 export function removeCard(id) {
@@ -72,44 +134,15 @@ export function removeCard(id) {
 
 export function updateCardStatus(id, status) {
   const card = document.querySelector(`[data-connection-id="${id}"]`);
-  if (!card) return;
-  updateCard(card, { id, status, port: card.querySelector(".url-display").textContent.match(/\d+/)?.[0] ?? 50000 });
-}
-
-function refreshCount() {
-  const n = document.querySelectorAll(".connection-card").length;
-  const running = document.querySelectorAll(".connection-card.running").length;
-  countBadge.textContent = `${running} active`;
-  countBadge.className = `tag ${running > 0 ? "is-success" : "is-light"}`;
-}
-
-async function onStart(id) {
-  try { await startServer(id); } catch (e) { alert(`Failed to start: ${e}`); }
-}
-
-async function onStop(id) {
-  try { await stopServer(id); } catch (e) { alert(`Failed to stop: ${e}`); }
-}
-
-async function onDelete(id) {
-  if (!confirm("Remove this connection?")) return;
-  try {
-    await deleteConnection(id);
-    removeCard(id);
-  } catch (e) { alert(`Failed to delete: ${e}`); }
-}
-
-function onCopyUrl(conn) {
-  const scheme = conn.use_https ? "https" : "http";
-  const mcpPath = conn.mcp_path || "/mcp";
-  const url = `${scheme}://127.0.0.1:${conn.port}${mcpPath}`;
-  navigator.clipboard.writeText(url).then(() => {
-    const btn = document.querySelector(`[data-connection-id="${conn.id}"] .copy-url-btn`);
-    if (btn) { btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = "Copy URL"; }, 1500); }
-  });
+  if (!card || !card._conn) return;
+  updateCard(card, { ...card._conn, status });
 }
 
 export async function loadDashboard() {
-  const conns = await listConnections();
-  conns.forEach(renderCard);
+  try {
+    const conns = await listConnections();
+    conns.forEach(renderCard);
+  } catch (e) {
+    console.error("loadDashboard failed:", e);
+  }
 }

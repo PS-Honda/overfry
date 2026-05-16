@@ -36,6 +36,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            // Must install crypto provider before any TLS operation
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
             // Set up audit log in the app log directory
             let log_dir = app.path().app_log_dir()?;
             std::fs::create_dir_all(&log_dir)?;
