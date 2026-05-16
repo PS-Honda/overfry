@@ -94,6 +94,7 @@ impl GlobalServer {
     #[allow(dead_code)]
     pub fn port(&self) -> u16 { self.port }
 
+    #[allow(dead_code)]
     pub fn is_running(&self) -> bool { self.shutdown_tx.is_some() }
 
     /// Register a connection's router (called on Start).
