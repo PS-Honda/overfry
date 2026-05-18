@@ -90,33 +90,38 @@ jobs:
         run: |
           $outDir = "dist/${{ matrix.label }}"
           New-Item -ItemType Directory -Force -Path $outDir
-          # Installers
-          Copy-Item "target/release/bundle/msi/*.msi"        $outDir -ErrorAction SilentlyContinue
-          Copy-Item "target/release/bundle/nsis/*-setup.exe" $outDir -ErrorAction SilentlyContinue
-          # Portable — requires WebView2 (pre-installed on Windows 10/11)
-          Copy-Item "target/release/overfry.exe" "$outDir/Overfry-portable.exe" -ErrorAction SilentlyContinue
+          # Rename to version-agnostic so README links never break
+          $msi = Get-Item "target/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msi) { Copy-Item $msi "$outDir/Overfry-windows-x64.msi" }
+          $nsis = Get-Item "target/release/bundle/nsis/*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($nsis) { Copy-Item $nsis "$outDir/Overfry-windows-x64-setup.exe" }
+          Copy-Item "target/release/overfry.exe" "$outDir/Overfry-windows-x64-portable.exe" -ErrorAction SilentlyContinue
 
       - name: Collect Linux artifacts
         if: matrix.os == 'ubuntu-22.04'
         run: |
           outDir="dist/${{ matrix.label }}"
           mkdir -p "$outDir"
-          cp target/release/bundle/deb/*.deb           "$outDir/" 2>/dev/null || true
-          cp target/release/bundle/appimage/*.AppImage "$outDir/" 2>/dev/null || true
-          cp target/release/bundle/rpm/*.rpm           "$outDir/" 2>/dev/null || true
+          # Rename to version-agnostic
+          src=$(ls target/release/bundle/appimage/*.AppImage 2>/dev/null | head -1)
+          [ -n "$src" ] && cp "$src" "$outDir/Overfry-linux-x64.AppImage"
+          src=$(ls target/release/bundle/deb/*.deb 2>/dev/null | head -1)
+          [ -n "$src" ] && cp "$src" "$outDir/Overfry-linux-x64.deb"
+          src=$(ls target/release/bundle/rpm/*.rpm 2>/dev/null | head -1)
+          [ -n "$src" ] && cp "$src" "$outDir/Overfry-linux-x64.rpm"
 
       - name: Collect macOS artifacts
         if: startsWith(matrix.os, 'macos')
         run: |
           outDir="dist/${{ matrix.label }}"
           mkdir -p "$outDir"
-          # DMG installer
-          cp target/${{ matrix.rust-target }}/release/bundle/dmg/*.dmg "$outDir/" 2>/dev/null || true
-          # Portable .app (zipped — run without installing)
+          # Rename to version-agnostic
+          src=$(ls target/${{ matrix.rust-target }}/release/bundle/dmg/*.dmg 2>/dev/null | head -1)
+          [ -n "$src" ] && cp "$src" "$outDir/Overfry-macos-arm64.dmg"
           appDir="target/${{ matrix.rust-target }}/release/bundle/macos"
           if [ -d "$appDir" ]; then
             cd "$appDir"
-            zip -r "$GITHUB_WORKSPACE/$outDir/Overfry-portable.app.zip" *.app
+            zip -r "$GITHUB_WORKSPACE/$outDir/Overfry-macos-arm64-portable.app.zip" *.app
             cd "$GITHUB_WORKSPACE"
           fi
 

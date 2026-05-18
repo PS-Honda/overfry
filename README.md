@@ -10,22 +10,21 @@ Expose local resources as MCP servers — connect Claude Desktop and Claude.ai t
 
 ## Download
 
-> **Latest release:** [github.com/PS-Honda/overfry/releases/latest](https://github.com/PS-Honda/overfry/releases/latest)
-
-| Platform | Format | Type |
+| Platform | Format | Download |
 |---|---|---|
-| **Windows** | `.msi` | Installer (recommended) |
-| **Windows** | `*-setup.exe` | NSIS Installer |
-| **Windows** | `Overfry-portable.exe` | Portable — no install needed¹ |
-| **Linux** | `.AppImage` | Portable — no install needed² |
-| **Linux** | `.deb` | Debian / Ubuntu package |
-| **macOS (Apple Silicon)** | `.dmg` | Installer |
-| **macOS (Intel)** | `.dmg` | Installer |
-| **macOS** | `Overfry-portable.app.zip` | Portable — unzip and run³ |
+| **Windows** | MSI Installer | [⬇ Overfry-windows-x64.msi](https://github.com/PS-Honda/overfry/releases/latest/download/Overfry-windows-x64.msi) |
+| **Windows** | NSIS Setup | [⬇ Overfry-windows-x64-setup.exe](https://github.com/PS-Honda/overfry/releases/latest/download/Overfry-windows-x64-setup.exe) |
+| **Windows** | Portable¹ | [⬇ Overfry-windows-x64-portable.exe](https://github.com/PS-Honda/overfry/releases/latest/download/Overfry-windows-x64-portable.exe) |
+| **Linux** | AppImage² | [⬇ Overfry-linux-x64.AppImage](https://github.com/PS-Honda/overfry/releases/latest/download/Overfry-linux-x64.AppImage) |
+| **Linux** | .deb (Ubuntu/Debian) | [⬇ Overfry-linux-x64.deb](https://github.com/PS-Honda/overfry/releases/latest/download/Overfry-linux-x64.deb) |
+| **Linux** | .rpm (Fedora/RHEL) | [⬇ Overfry-linux-x64.rpm](https://github.com/PS-Honda/overfry/releases/latest/download/Overfry-linux-x64.rpm) |
+| **macOS (Apple Silicon)** | DMG Installer | [⬇ Overfry-macos-arm64.dmg](https://github.com/PS-Honda/overfry/releases/latest/download/Overfry-macos-arm64.dmg) |
+| **macOS (Apple Silicon)** | Portable³ | [⬇ Overfry-macos-arm64-portable.app.zip](https://github.com/PS-Honda/overfry/releases/latest/download/Overfry-macos-arm64-portable.app.zip) |
 
-> ¹ Requires WebView2 (pre-installed on Windows 10/11)  
-> ² `chmod +x Overfry-*.AppImage && ./Overfry-*.AppImage`  
-> ³ First launch: right-click → Open to bypass Gatekeeper
+> ¹ No install needed — requires WebView2 (built-in on Windows 10/11)  
+> ² No install needed — `chmod +x Overfry-linux-x64.AppImage && ./Overfry-linux-x64.AppImage`  
+> ³ Unzip → right-click .app → Open (bypass Gatekeeper on first launch)  
+> Intel Mac users: run the ARM build via Rosetta 2
 
 ---
 
