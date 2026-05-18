@@ -34,13 +34,6 @@ jobs:
             cloudflared-bin: src-tauri/binaries/cloudflared-aarch64-apple-darwin
             tauri-args: "--target aarch64-apple-darwin"
 
-          # ── macOS Intel (x64) ────────────────────────────────────
-          - os: macos-13
-            label: macos-x64
-            rust-target: x86_64-apple-darwin
-            cloudflared-url: https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64
-            cloudflared-bin: src-tauri/binaries/cloudflared-x86_64-apple-darwin
-            tauri-args: "--target x86_64-apple-darwin"
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.label }}
