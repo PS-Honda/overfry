@@ -5,16 +5,6 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
-    inputs:
-      variant:
-        description: "Which variants to build"
-        required: false
-        default: "all"
-        type: choice
-        options:
-          - all
-          - lightweight-only
-          - semantic-only
 
 jobs:
   build:
@@ -22,105 +12,125 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ── Windows x64 ──────────────────────────────────────────
           - os: windows-latest
-            label: windows
-            variant: lightweight
-            features: ""
-            artifact_name: Overfry-windows-lightweight
+            label: windows-x64
+            cloudflared-url: https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+            cloudflared-bin: src-tauri/binaries/cloudflared-x86_64-pc-windows-msvc.exe
+            tauri-args: ""
+
+          # ── Linux x64 ────────────────────────────────────────────
+          - os: ubuntu-22.04
+            label: linux-x64
+            cloudflared-url: https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+            cloudflared-bin: src-tauri/binaries/cloudflared-x86_64-unknown-linux-gnu
+            tauri-args: ""
+
+          # ── macOS Apple Silicon (arm64) ───────────────────────────
           - os: macos-latest
-            label: macos
-            variant: lightweight
-            features: ""
-            artifact_name: Overfry-macos-lightweight
-          - os: windows-latest
-            label: windows
-            variant: semantic
-            features: "--features semantic-search"
-            artifact_name: Overfry-windows-semantic
-          - os: macos-latest
-            label: macos
-            variant: semantic
-            features: "--features semantic-search"
-            artifact_name: Overfry-macos-semantic
+            label: macos-arm64
+            rust-target: aarch64-apple-darwin
+            cloudflared-url: https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64
+            cloudflared-bin: src-tauri/binaries/cloudflared-aarch64-apple-darwin
+            tauri-args: "--target aarch64-apple-darwin"
+
+          # ── macOS Intel (x64) ────────────────────────────────────
+          - os: macos-13
+            label: macos-x64
+            rust-target: x86_64-apple-darwin
+            cloudflared-url: https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64
+            cloudflared-bin: src-tauri/binaries/cloudflared-x86_64-apple-darwin
+            tauri-args: "--target x86_64-apple-darwin"
 
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.label }} / ${{ matrix.variant }}
+    name: ${{ matrix.label }}
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target || '' }}
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-${{ matrix.variant }}
+          key: ${{ matrix.label }}
 
-      - name: Install Node (for Tauri CLI)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@2
-
-      # macOS: install system deps
-      - name: Install macOS dependencies
-        if: matrix.os == 'macos-latest'
+      # ── Linux system deps ─────────────────────────────────────
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
         run: |
-          brew update
-          brew install create-dmg
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config
 
-      # Windows: install WebView2 (already on GitHub runners, but be explicit)
-      - name: Verify WebView2 (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
+      # ── Download cloudflared sidecar ──────────────────────────
+      - name: Download cloudflared
+        shell: bash
         run: |
-          Get-ChildItem "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients" -ErrorAction SilentlyContinue
+          mkdir -p src-tauri/binaries
+          curl -L "${{ matrix.cloudflared-url }}" -o "${{ matrix.cloudflared-bin }}"
+          chmod +x "${{ matrix.cloudflared-bin }}" || true
 
-      - name: Build (lightweight)
-        if: matrix.variant == 'lightweight'
-        run: cargo tauri build
+      # ── Build ─────────────────────────────────────────────────
+      - name: Build Tauri app
+        run: cargo tauri build ${{ matrix.tauri-args }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Build (with semantic search)
-        if: matrix.variant == 'semantic'
-        run: cargo tauri build ${{ matrix.features }}
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-      # ── Collect artifacts ─────────────────────────────────────────
-
+      # ── Collect artifacts ─────────────────────────────────────
       - name: Collect Windows artifacts
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $outDir = "dist/${{ matrix.artifact_name }}"
+          $outDir = "dist/${{ matrix.label }}"
           New-Item -ItemType Directory -Force -Path $outDir
-          Copy-Item "target/release/bundle/msi/*.msi"         $outDir -ErrorAction SilentlyContinue
-          Copy-Item "target/release/bundle/nsis/*-setup.exe"  $outDir -ErrorAction SilentlyContinue
-          Copy-Item "target/release/overfry.exe"              $outDir -ErrorAction SilentlyContinue
+          # Installers
+          Copy-Item "target/release/bundle/msi/*.msi"        $outDir -ErrorAction SilentlyContinue
+          Copy-Item "target/release/bundle/nsis/*-setup.exe" $outDir -ErrorAction SilentlyContinue
+          # Portable — requires WebView2 (pre-installed on Windows 10/11)
+          Copy-Item "target/release/overfry.exe" "$outDir/Overfry-portable.exe" -ErrorAction SilentlyContinue
+
+      - name: Collect Linux artifacts
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          outDir="dist/${{ matrix.label }}"
+          mkdir -p "$outDir"
+          cp target/release/bundle/deb/*.deb           "$outDir/" 2>/dev/null || true
+          cp target/release/bundle/appimage/*.AppImage "$outDir/" 2>/dev/null || true
+          cp target/release/bundle/rpm/*.rpm           "$outDir/" 2>/dev/null || true
 
       - name: Collect macOS artifacts
-        if: matrix.os == 'macos-latest'
+        if: startsWith(matrix.os, 'macos')
         run: |
-          outDir="dist/${{ matrix.artifact_name }}"
+          outDir="dist/${{ matrix.label }}"
           mkdir -p "$outDir"
-          cp -r target/release/bundle/dmg/*.dmg    "$outDir/" 2>/dev/null || true
-          cp -r target/release/bundle/macos/*.app  "$outDir/" 2>/dev/null || true
+          # DMG installer
+          cp target/${{ matrix.rust-target }}/release/bundle/dmg/*.dmg "$outDir/" 2>/dev/null || true
+          # Portable .app (zipped — run without installing)
+          appDir="target/${{ matrix.rust-target }}/release/bundle/macos"
+          if [ -d "$appDir" ]; then
+            cd "$appDir"
+            zip -r "$GITHUB_WORKSPACE/$outDir/Overfry-portable.app.zip" *.app
+            cd "$GITHUB_WORKSPACE"
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: dist/${{ matrix.artifact_name }}/
+          name: ${{ matrix.label }}
+          path: dist/${{ matrix.label }}/
           retention-days: 30
 
-  # ── GitHub Release (tag pushes only) ─────────────────────────────
+  # ── GitHub Release (tag pushes only) ─────────────────────────
   release:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
