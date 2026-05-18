@@ -71,6 +71,15 @@ jobs:
             libssl-dev \
             pkg-config
 
+      # ── Tauri CLI ─────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2
+
       # ── Download cloudflared sidecar ──────────────────────────
       - name: Download cloudflared
         shell: bash
