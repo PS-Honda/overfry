@@ -72,13 +72,8 @@ jobs:
             pkg-config
 
       # ── Tauri CLI ─────────────────────────────────────────────
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
       - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@2
+        run: cargo install tauri-cli --version "^2" --locked
 
       # ── Download cloudflared sidecar ──────────────────────────
       - name: Download cloudflared
@@ -90,7 +85,7 @@ jobs:
 
       # ── Build ─────────────────────────────────────────────────
       - name: Build Tauri app
-        run: tauri build ${{ matrix.tauri-args }}
+        run: cargo tauri build ${{ matrix.tauri-args }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
