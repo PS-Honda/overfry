@@ -133,6 +133,7 @@ pub fn run() {
             rotate_oauth_secret,
             get_auth_status,
             set_local_auth_enabled,
+            get_tunnel_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

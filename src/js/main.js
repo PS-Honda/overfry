@@ -1,10 +1,17 @@
 import { loadDashboard, updateCardStatus, handlePortChanged, handleTunnelChanged, handleAuthStatusChanged } from "./dashboard.js";
 import { appendAuditEntry } from "./audit.js";
 import { openModal } from "./modal.js";
+import { getTunnelStatus } from "./api.js";
 
 document.addEventListener("DOMContentLoaded", async () => {
   await loadDashboard();
   wireTauriEvents();
+  // Query current tunnel state — handles the case where Active event fired
+  // before JS was ready (timing race on startup or after webview reload).
+  try {
+    const status = await getTunnelStatus();
+    handleTunnelChanged(status);
+  } catch { /* not in Tauri context */ }
 });
 
 document.getElementById("btn-add-server").addEventListener("click", openModal);

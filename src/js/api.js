@@ -20,3 +20,4 @@ export const getOAuthCredentials = ()      => invoke("get_oauth_credentials", {}
 export const rotateOAuthSecret   = ()      => invoke("rotate_oauth_secret",   {});
 export const getAuthStatus       = ()        => invoke("get_auth_status",        {});
 export const setLocalAuthEnabled = (enabled) => invoke("set_local_auth_enabled",  { enabled });
+export const getTunnelStatus     = ()        => invoke("get_tunnel_status",       {});

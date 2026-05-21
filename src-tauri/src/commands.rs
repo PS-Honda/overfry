@@ -18,6 +18,7 @@ use crate::{
     obsidian_fs_server,
     proxy_server,
     store::{AuthSettings, StoreState},
+    tunnel,
 };
 
 type CmdResult<T> = Result<T, String>;
@@ -527,6 +528,13 @@ pub async fn set_local_auth_enabled(
     let s = store.0.lock().unwrap();
     s.save_auth_settings(&AuthSettings { local_enabled: enabled })
         .map_err(|e| e.to_string())
+}
+
+// ── Tunnel status ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_tunnel_status(app: AppHandle) -> serde_json::Value {
+    tunnel::get_status_snapshot(&app)
 }
 
 // ── Audit log ─────────────────────────────────────────────────────────────────
