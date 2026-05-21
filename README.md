@@ -1,7 +1,7 @@
 # Overfry — MCP Bridge
 
 [![Release Builds](https://github.com/PS-Honda/overfry/actions/workflows/release.yml/badge.svg)](https://github.com/PS-Honda/overfry/actions/workflows/release.yml)
-![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![Version](https://img.shields.io/badge/version-0.2.2-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
 Expose local resources as MCP servers — connect Claude Desktop and Claude.ai to your files, Obsidian vault, or remote APIs in minutes.
