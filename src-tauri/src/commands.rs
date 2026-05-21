@@ -477,9 +477,10 @@ pub async fn get_oauth_credentials(
     let port = gs.lock().await.port();
     let creds = auth_state.0.credentials.read().await;
     Ok(serde_json::json!({
-        "client_id":      creds.client_id,
-        "client_secret":  creds.client_secret,
-        "token_endpoint": format!("http://127.0.0.1:{port}/oauth/token"),
+        "client_id":               creds.client_id,
+        "client_secret":           creds.client_secret,
+        "token_endpoint":          format!("http://127.0.0.1:{port}/oauth/token"),
+        "authorization_endpoint":  format!("http://127.0.0.1:{port}/oauth/authorize"),
     }))
 }
 

@@ -21,14 +21,32 @@ use tokio::sync::RwLock;
 
 use crate::store::OAuthCredentials;
 
+// ── PKCE helper ───────────────────────────────────────────────────────────────
+
+fn verify_pkce(verifier: &str, challenge: &str) -> bool {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(hash) == challenge
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 const TOKEN_TTL: Duration = Duration::from_secs(86400); // 24 hours
+
+#[allow(dead_code)]
+struct AuthCode {
+    code_challenge: String,
+    redirect_uri:   String,
+    client_id:      String,
+    expires_at:     Instant,
+}
 
 #[derive(Clone)]
 pub struct IncomingAuthState {
     pub credentials: Arc<RwLock<OAuthCredentials>>,
     tokens:          Arc<RwLock<HashMap<String, Instant>>>,
+    auth_codes:      Arc<RwLock<HashMap<String, AuthCode>>>,
     local_enabled:   Arc<AtomicBool>,  // user preference, persisted
     tunnel_active:   Arc<AtomicBool>,  // runtime, set by tunnel.rs
 }
@@ -38,6 +56,7 @@ impl IncomingAuthState {
         Self {
             credentials:   Arc::new(RwLock::new(credentials)),
             tokens:        Arc::new(RwLock::new(HashMap::new())),
+            auth_codes:    Arc::new(RwLock::new(HashMap::new())),
             local_enabled: Arc::new(AtomicBool::new(local_enabled)),
             tunnel_active: Arc::new(AtomicBool::new(false)),
         }
@@ -60,6 +79,40 @@ impl IncomingAuthState {
     pub async fn validate_token(&self, token: &str) -> bool {
         let tokens = self.tokens.read().await;
         tokens.get(token).map(|exp| *exp > Instant::now()).unwrap_or(false)
+    }
+
+    /// Issue a single-use authorization code (10-minute TTL).
+    pub async fn issue_auth_code(&self, client_id: &str, code_challenge: &str, redirect_uri: &str) -> String {
+        use rand::Rng;
+        let code_bytes: [u8; 16] = rand::thread_rng().gen();
+        let code = code_bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+
+        let mut codes = self.auth_codes.write().await;
+        codes.retain(|_, v| v.expires_at > Instant::now());
+        codes.insert(code.clone(), AuthCode {
+            code_challenge: code_challenge.to_string(),
+            redirect_uri:   redirect_uri.to_string(),
+            client_id:      client_id.to_string(),
+            expires_at:     Instant::now() + Duration::from_secs(600),
+        });
+        code
+    }
+
+    /// Consume an auth code and return an access token if valid.
+    pub async fn exchange_code(&self, code: &str, code_verifier: &str, redirect_uri: &str) -> Option<String> {
+        let mut codes = self.auth_codes.write().await;
+        let entry = codes.remove(code)?;
+        if entry.expires_at < Instant::now() {
+            return None;
+        }
+        if entry.redirect_uri != redirect_uri {
+            return None;
+        }
+        if !verify_pkce(code_verifier, &entry.code_challenge) {
+            return None;
+        }
+        drop(codes);
+        Some(self.issue_token().await)
     }
 
     /// Replace credentials and invalidate all existing tokens.
@@ -106,32 +159,49 @@ pub async fn token_endpoint(
     // Accept both application/x-www-form-urlencoded and application/json
     let params = parse_body(&headers, &body);
 
-    let grant_type    = params.get("grant_type").map(|s| s.as_str()).unwrap_or("");
-    let client_id     = params.get("client_id").map(|s| s.as_str()).unwrap_or("");
-    let client_secret = params.get("client_secret").map(|s| s.as_str()).unwrap_or("");
+    let grant_type = params.get("grant_type").map(|s| s.as_str()).unwrap_or("");
+    let client_id  = params.get("client_id").map(|s| s.as_str()).unwrap_or("");
 
-    if grant_type != "client_credentials" {
-        return (
+    match grant_type {
+        "client_credentials" => {
+            let client_secret = params.get("client_secret").map(|s| s.as_str()).unwrap_or("");
+            let creds = auth.credentials.read().await;
+            if client_id != creds.client_id || client_secret != creds.client_secret {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "invalid_client" })),
+                ).into_response();
+            }
+            drop(creds);
+            let token = auth.issue_token().await;
+            Json(json!({
+                "access_token": token,
+                "token_type":   "bearer",
+                "expires_in":   TOKEN_TTL.as_secs(),
+            })).into_response()
+        }
+        "authorization_code" => {
+            let code          = params.get("code").map(|s| s.as_str()).unwrap_or("");
+            let code_verifier = params.get("code_verifier").map(|s| s.as_str()).unwrap_or("");
+            let redirect_uri  = params.get("redirect_uri").map(|s| s.as_str()).unwrap_or("");
+
+            match auth.exchange_code(code, code_verifier, redirect_uri).await {
+                Some(token) => Json(json!({
+                    "access_token": token,
+                    "token_type":   "bearer",
+                    "expires_in":   TOKEN_TTL.as_secs(),
+                })).into_response(),
+                None => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "invalid_grant" })),
+                ).into_response(),
+            }
+        }
+        _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "unsupported_grant_type" })),
-        ).into_response();
+        ).into_response(),
     }
-
-    let creds = auth.credentials.read().await;
-    if client_id != creds.client_id || client_secret != creds.client_secret {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "invalid_client" })),
-        ).into_response();
-    }
-    drop(creds);
-
-    let token = auth.issue_token().await;
-    Json(json!({
-        "access_token": token,
-        "token_type":   "bearer",
-        "expires_in":   TOKEN_TTL.as_secs(),
-    })).into_response()
 }
 
 /// Validate incoming Bearer token. Returns None if valid, Some(Response) if rejected.

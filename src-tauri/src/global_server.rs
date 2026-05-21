@@ -8,8 +8,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     body::Body,
-    extract::State,
-    http::{Request, StatusCode},
+    extract::{Query, State},
+    http::{HeaderMap, Request, StatusCode},
     response::{IntoResponse, Response},
     Router,
 };
@@ -66,10 +66,12 @@ impl GlobalServer {
         let (tx, rx) = oneshot::channel::<()>();
 
         let app = if let Some(auth) = self.auth_state.clone() {
-            use axum::{middleware, routing::post};
+            use axum::{middleware, routing::{get, post}};
             use crate::incoming_auth::token_endpoint;
 
-            let token_route = Router::new()
+            let system_routes = Router::new()
+                .route("/.well-known/oauth-authorization-server", get(discovery_handler))
+                .route("/oauth/authorize", get(authorize_handler))
                 .route("/oauth/token", post(token_endpoint))
                 .with_state(auth.clone());
 
@@ -81,7 +83,7 @@ impl GlobalServer {
                     auth_middleware,
                 ));
 
-            token_route.merge(mcp_routes)
+            system_routes.merge(mcp_routes)
         } else {
             Router::new()
                 .fallback(dispatch_handler)
@@ -178,4 +180,66 @@ async fn route_request(dispatch: DispatchTable, req: Request<Body>) -> Response 
             StatusCode::NOT_FOUND.into_response()
         }
     }
+}
+
+// ── OAuth discovery + authorize handlers ──────────────────────────────────────
+
+async fn discovery_handler(
+    headers: HeaderMap,
+    State(_auth): State<Arc<crate::incoming_auth::IncomingAuthState>>,
+) -> axum::Json<serde_json::Value> {
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("127.0.0.1:51552");
+    let scheme = if host.contains('.') && !host.starts_with("127.") && !host.starts_with("localhost") {
+        "https"
+    } else {
+        "http"
+    };
+    let base = format!("{scheme}://{host}");
+    axum::Json(serde_json::json!({
+        "issuer": base,
+        "authorization_endpoint": format!("{base}/oauth/authorize"),
+        "token_endpoint": format!("{base}/oauth/token"),
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "client_credentials"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post"]
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct AuthorizeParams {
+    client_id:             String,
+    redirect_uri:          String,
+    state:                 Option<String>,
+    code_challenge:        String,
+    code_challenge_method: Option<String>,
+    response_type:         String,
+}
+
+async fn authorize_handler(
+    State(auth): State<Arc<crate::incoming_auth::IncomingAuthState>>,
+    Query(params): Query<AuthorizeParams>,
+) -> Response {
+    if params.response_type != "code" {
+        return (StatusCode::BAD_REQUEST, "unsupported_response_type").into_response();
+    }
+    if let Some(ref method) = params.code_challenge_method {
+        if method != "S256" {
+            return (StatusCode::BAD_REQUEST, "unsupported_code_challenge_method").into_response();
+        }
+    }
+    let creds = auth.credentials.read().await;
+    if params.client_id != creds.client_id {
+        return (StatusCode::UNAUTHORIZED, "invalid_client").into_response();
+    }
+    drop(creds);
+    let code = auth.issue_auth_code(&params.client_id, &params.code_challenge, &params.redirect_uri).await;
+    let mut location = format!("{}?code={}", params.redirect_uri, code);
+    if let Some(state) = params.state {
+        location.push_str(&format!("&state={state}"));
+    }
+    axum::response::Redirect::temporary(&location).into_response()
 }
